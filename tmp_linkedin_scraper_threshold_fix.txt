@@ -1,0 +1,15 @@
+@@ class NoAuthScraper
+@@     def get_profile_text(self, query_or_url: str) -> tuple[str, str]:
+         for name, fn in strategies:
+             log.info(f"Trying: {name}")
+             try:
+                 text, url = fn()
+-                if text and len(text.strip()) > 150:
++                # Accept shorter snippets so we can still try Groq extraction
++                if text and len(text.strip()) > 80:
+                     log.info(f"  ✓ Got {len(text)} chars via {name}")
+                     return text, url
+                 log.warning(f"  Too little content ({len(text) if text else 0} chars)")
+             except Exception as e:
+                 log.warning(f"  Failed: {e}")
+

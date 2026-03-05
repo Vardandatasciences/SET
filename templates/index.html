@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Search App</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #f5f5f7;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+
+        .card {
+            background: #ffffff;
+            padding: 24px 28px;
+            border-radius: 14px;
+            box-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+            max-width: 420px;
+            width: 100%;
+        }
+
+        h1 {
+            margin: 0 0 16px;
+            font-size: 1.4rem;
+            color: #111827;
+        }
+
+        .field {
+            margin-bottom: 14px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 4px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #4b5563;
+        }
+
+        input[type="text"],
+        select {
+            width: 100%;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid #d1d5db;
+            font-size: 0.95rem;
+            outline: none;
+            box-sizing: border-box;
+        }
+
+        input[type="text"]:focus,
+        select:focus {
+            border-color: #2563eb;
+            box-shadow: 0 0 0 1px #2563eb20;
+        }
+
+        button {
+            margin-top: 8px;
+            width: 100%;
+            padding: 9px 14px;
+            border-radius: 999px;
+            border: none;
+            background: #2563eb;
+            color: #ffffff;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        .result {
+            margin-top: 16px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            background: #eff6ff;
+            color: #1e40af;
+            font-size: 0.9rem;
+            max-height: 320px;
+            overflow: auto;
+            white-space: pre-wrap;
+        }
+
+        .profile-header {
+            margin-bottom: 8px;
+        }
+
+        .profile-name {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #111827;
+        }
+
+        .profile-headline {
+            font-size: 0.9rem;
+            color: #374151;
+            margin-top: 2px;
+        }
+
+        .profile-location {
+            font-size: 0.85rem;
+            color: #6b7280;
+            margin-top: 2px;
+        }
+
+        .profile-about {
+            font-size: 0.9rem;
+            color: #111827;
+            margin-top: 8px;
+            white-space: pre-wrap;
+        }
+
+        .profile-section-title {
+            margin-top: 10px;
+            margin-bottom: 4px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #6b7280;
+        }
+
+        .profile-item {
+            font-size: 0.86rem;
+            color: #111827;
+            margin-bottom: 4px;
+        }
+
+        .profile-pill-list {
+            margin-top: 4px;
+        }
+
+        .profile-pill {
+            display: inline-block;
+            padding: 2px 8px;
+            margin: 2px 4px 2px 0;
+            border-radius: 999px;
+            background: #dbeafe;
+            color: #1e3a8a;
+            font-size: 0.78rem;
+        }
+
+        .profile-meta {
+            font-size: 0.78rem;
+            color: #6b7280;
+            margin-top: 6px;
+        }
+
+        .error {
+            margin-top: 16px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            background: #fef2f2;
+            color: #b91c1c;
+            font-size: 0.9rem;
+        }
+
+        .loading-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.32);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+
+        .loading-card {
+            background: #ffffff;
+            padding: 14px 18px;
+            border-radius: 999px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.35);
+            font-size: 0.9rem;
+            color: #111827;
+        }
+
+        .spinner {
+            width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            border: 2px solid #d1d5db;
+            border-top-color: #2563eb;
+            animation: spin 0.7s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="loading-backdrop" id="loading-overlay">
+        <div class="loading-card">
+            <div class="spinner"></div>
+            <span>Fetching information, please wait...</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h1>Search</h1>
+        <form method="post" action="{{ url_for('index') }}" id="search-form">
+            <div class="field">
+                <label for="sname">Name</label>
+                <input type="text" id="sname" name="sname" placeholder="Enter name" required />
+            </div>
+
+            <div class="field">
+                <label for="description">Description (optional)</label>
+                <input type="text" id="description" name="description"
+                    placeholder="Add company, role, city or any extra hints" />
+                <div style="margin-top:4px;font-size:0.8rem;color:#6b7280;">
+                    Tip: if we find many similar profiles, this extra description helps narrow down to the right person.
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="source">Search with</label>
+                <select id="source" name="source" required>
+                    <option value="" disabled selected>Select source</option>
+                    <option value="internet">internet</option>
+                    <option value="openai">openai</option>
+                    <option value="perplexity">perplexity</option>
+                    <option value="google">google</option>
+                </select>
+            </div>
+
+            <button type="submit" id="search-button">Search</button>
+        </form>
+
+        {% if error %}
+        <div class="error" id="server-error">
+            {{ error }}
+        </div>
+        {% else %}
+        <div class="error" id="server-error" style="display:none;"></div>
+        {% endif %}
+
+        <div class="error" id="internet-error" style="display:none;"></div>
+
+        <div class="result" id="internet-candidates" style="display:none;"></div>
+
+        <div class="result" id="internet-result" style="display:none;">
+            <pre id="internet-result-pre"
+                style="margin:0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.8rem;"></pre>
+        </div>
+
+        <div class="result" id="internet-profile-card" style="display:none;"></div>
+
+        {% if result %}
+        <div class="result" id="server-result">
+            <pre
+                style="margin:0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.8rem;">
+{{ result | tojson(indent=2) }}
+            </pre>
+        </div>
+        {% else %}
+        <div class="result" id="server-result" style="display:none;"></div>
+        {% endif %}
+
+        <div class="result" id="server-profile-card" style="display:none;"></div>
+    </div>
+
+    <script>
+        (function () {
+            const form = document.getElementById("search-form");
+            const btn = document.getElementById("search-button");
+            const overlay = document.getElementById("loading-overlay");
+            const sourceSelect = document.getElementById("source");
+            const nameInput = document.getElementById("sname");
+            const descriptionInput = document.getElementById("description");
+
+            const serverError = document.getElementById("server-error");
+            const serverResult = document.getElementById("server-result");
+
+            const internetError = document.getElementById("internet-error");
+            const internetCandidates = document.getElementById("internet-candidates");
+            const internetResult = document.getElementById("internet-result");
+            const internetResultPre = document.getElementById("internet-result-pre");
+            const internetProfileCard = document.getElementById("internet-profile-card");
+            const serverProfileCard = document.getElementById("server-profile-card");
+
+            if (!form || !btn || !overlay || !sourceSelect || !nameInput || !descriptionInput) return;
+
+            function buildProfileHtml(profile) {
+                if (!profile || typeof profile !== "object") return "";
+
+                const name = profile.name || "(no name found)";
+                const headline = profile.headline || "";
+                const location = profile.location || "";
+                const about = profile.about || "";
+                const sourceUrl = profile.source_url || profile.source || "";
+
+                const experience = Array.isArray(profile.experience) ? profile.experience : [];
+                const education = Array.isArray(profile.education) ? profile.education : [];
+                const skills = Array.isArray(profile.skills) ? profile.skills : [];
+                const certifications = Array.isArray(profile.certifications) ? profile.certifications : [];
+
+                let html = "";
+                html += '<div class="profile-header">';
+                html += '<div class="profile-name">' + name + "</div>";
+                if (headline) {
+                    html += '<div class="profile-headline">' + headline + "</div>";
+                }
+                if (location) {
+                    html += '<div class="profile-location">' + location + "</div>";
+                }
+                html += "</div>";
+
+                if (about) {
+                    html += '<div class="profile-about">' + about + "</div>";
+                }
+
+                if (skills.length) {
+                    html += '<div class="profile-section-title">Key skills</div>';
+                    html += '<div class="profile-pill-list">';
+                    skills.slice(0, 25).forEach(function (s) {
+                        html += '<span class="profile-pill">' + String(s) + "</span>";
+                    });
+                    html += "</div>";
+                }
+
+                if (experience.length) {
+                    html += '<div class="profile-section-title">Experience</div>';
+                    experience.slice(0, 8).forEach(function (job) {
+                        if (!job) return;
+                        const title = job.title || "";
+                        const company = job.company || "";
+                        const years = job.years || job.duration || "";
+                        const loc = job.location || "";
+                        const desc = job.description || "";
+                        html += '<div class="profile-item">';
+                        if (title || company) {
+                            html += "<strong>" + [title, company].filter(Boolean).join(" @ ") + "</strong>";
+                        }
+                        const metaParts = [];
+                        if (loc) metaParts.push(loc);
+                        if (years) metaParts.push(years);
+                        if (metaParts.length) {
+                            html += '<div class="profile-meta">' + metaParts.join(" · ") + "</div>";
+                        }
+                        if (desc) {
+                            html += '<div style="font-size:0.8rem;color:#4b5563;margin-top:2px;white-space:pre-wrap;">' +
+                                desc +
+                                "</div>";
+                        }
+                        html += "</div>";
+                    });
+                }
+
+                if (education.length) {
+                    html += '<div class="profile-section-title">Education</div>';
+                    education.slice(0, 8).forEach(function (ed) {
+                        if (!ed) return;
+                        const inst = ed.institution || "";
+                        const degree = ed.degree || "";
+                        const years = ed.years || "";
+                        const field = ed.field || "";
+                        html += '<div class="profile-item">';
+                        if (inst) {
+                            html += "<strong>" + inst + "</strong>";
+                        }
+                        const metaParts = [];
+                        if (degree) metaParts.push(degree);
+                        if (field) metaParts.push(field);
+                        if (years) metaParts.push(years);
+                        if (metaParts.length) {
+                            html += '<div class="profile-meta">' + metaParts.join(" · ") + "</div>";
+                        }
+                        html += "</div>";
+                    });
+                }
+
+                if (certifications.length) {
+                    html += '<div class="profile-section-title">Certifications</div>';
+                    certifications.slice(0, 8).forEach(function (cert) {
+                        if (!cert) return;
+                        const nameC = cert.name || "";
+                        const issuer = cert.issuer || "";
+                        const date = cert.date || "";
+                        html += '<div class="profile-item">';
+                        if (nameC) {
+                            html += "<strong>" + nameC + "</strong>";
+                        }
+                        const metaParts = [];
+                        if (issuer) metaParts.push(issuer);
+                        if (date) metaParts.push(date);
+                        if (metaParts.length) {
+                            html += '<div class="profile-meta">' + metaParts.join(" · ") + "</div>";
+                        }
+                        html += "</div>";
+                    });
+                }
+
+                if (sourceUrl) {
+                    html += '<div class="profile-meta">Source: ' + sourceUrl + "</div>";
+                }
+
+                return html;
+            }
+
+            function renderProfileCard(container, profile) {
+                if (!container) return;
+                const html = buildProfileHtml(profile);
+                if (!html) return;
+                container.innerHTML = html;
+                container.style.display = "block";
+            }
+
+            function resetInternetViews() {
+                internetError.style.display = "none";
+                internetError.textContent = "";
+                internetCandidates.style.display = "none";
+                internetCandidates.innerHTML = "";
+                internetResult.style.display = "none";
+                internetResultPre.textContent = "";
+                if (internetProfileCard) {
+                    internetProfileCard.style.display = "none";
+                    internetProfileCard.innerHTML = "";
+                }
+            }
+
+            async function runInternetFlow() {
+                const name = nameInput.value.trim();
+                const desc = descriptionInput.value.trim();
+                const query = desc ? `${name} ${desc}` : name;
+                resetInternetViews();
+
+                if (!query) {
+                    internetError.textContent = "Please enter a name.";
+                    internetError.style.display = "block";
+                    return;
+                }
+
+                overlay.style.display = "flex";
+                btn.disabled = true;
+                btn.textContent = "Searching...";
+
+                try {
+                    const resp = await fetch("/api/search", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ query })
+                    });
+                    const data = await resp.json();
+
+                    if (!resp.ok || data.error) {
+                        internetError.textContent = data.error || "Error while searching LinkedIn profiles.";
+                        internetError.style.display = "block";
+                        return;
+                    }
+
+                    const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+                    if (!candidates.length) {
+                        internetError.textContent = "No LinkedIn profiles found. Please refine the name (add company/city).";
+                        internetError.style.display = "block";
+                        return;
+                    }
+
+                    const list = document.createElement("div");
+                    list.innerHTML = "<strong>Select the correct person:</strong><br/><br/>";
+
+                    candidates.forEach((c, idx) => {
+                        const row = document.createElement("div");
+                        row.style.marginBottom = "8px";
+
+                        const title = document.createElement("div");
+                        title.textContent = (c.name || `Person ${idx + 1}`) + (c.company ? ` — ${c.company}` : "");
+
+                        const link = document.createElement("a");
+                        link.href = c.url;
+                        link.target = "_blank";
+                        link.rel = "noreferrer";
+                        link.textContent = c.url;
+
+                        const snippet = document.createElement("div");
+                        snippet.style.fontSize = "0.8rem";
+                        snippet.style.color = "#4b5563";
+                        snippet.textContent = c.snippet || "";
+
+                        const chooseBtn = document.createElement("button");
+                        chooseBtn.type = "button";
+                        chooseBtn.style.marginTop = "4px";
+                        chooseBtn.style.padding = "4px 10px";
+                        chooseBtn.style.borderRadius = "999px";
+                        chooseBtn.style.border = "1px solid #d1d5db";
+                        chooseBtn.style.background = "#ffffff";
+                        chooseBtn.style.color = "#111827";
+                        chooseBtn.style.fontSize = "0.8rem";
+                        chooseBtn.textContent = "Use this profile";
+
+                        chooseBtn.addEventListener("click", async () => {
+                            const ok = window.confirm(
+                                `Use this LinkedIn profile?\n\n${c.name || "Unknown"}\n${c.url}`
+                            );
+                            if (!ok) return;
+
+                            overlay.style.display = "flex";
+                            btn.disabled = true;
+                            btn.textContent = "Fetching profile...";
+                            internetResult.style.display = "none";
+                            internetResultPre.textContent = "";
+
+                            try {
+                                const r = await fetch("/api/profile", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ query: c.url })
+                                });
+                                const profile = await r.json();
+
+                                if (!r.ok || profile.error) {
+                                    internetError.textContent = profile.error || "Error while extracting profile.";
+                                    internetError.style.display = "block";
+                                    return;
+                                }
+
+                                // Keep JSON hidden for debugging if needed
+                                internetResultPre.textContent = JSON.stringify(profile, null, 2);
+                                internetResult.style.display = "none";
+
+                                renderProfileCard(internetProfileCard, profile);
+                            } catch (e) {
+                                internetError.textContent = "Network error while extracting profile.";
+                                internetError.style.display = "block";
+                            } finally {
+                                overlay.style.display = "none";
+                                btn.disabled = false;
+                                btn.textContent = "Search";
+                            }
+                        });
+
+                        row.appendChild(title);
+                        row.appendChild(link);
+                        if (snippet.textContent) {
+                            row.appendChild(snippet);
+                        }
+                        row.appendChild(chooseBtn);
+                        list.appendChild(row);
+                    });
+
+                    internetCandidates.innerHTML = "";
+                    internetCandidates.appendChild(list);
+                    internetCandidates.style.display = "block";
+                } catch (e) {
+                    internetError.textContent = "Network error while searching LinkedIn profiles.";
+                    internetError.style.display = "block";
+                } finally {
+                    overlay.style.display = "none";
+                    btn.disabled = false;
+                    btn.textContent = "Search";
+                }
+            }
+
+            form.addEventListener("submit", function (event) {
+                // Clear server-rendered result/error when using JS flow
+                serverError.style.display = "none";
+                serverResult.style.display = "none";
+
+                if (sourceSelect.value === "internet") {
+                    event.preventDefault();
+                    runInternetFlow();
+                    return;
+                }
+
+                // Default behavior for other sources: normal POST with loading overlay
+                overlay.style.display = "flex";
+                btn.disabled = true;
+                btn.textContent = "Searching...";
+            });
+
+            // If we already have a server-rendered result (e.g. OpenAI source),
+            // parse the JSON and show a structured profile card instead of raw JSON.
+            (function hydrateServerResult() {
+                if (!serverResult || !serverProfileCard) return;
+                const pre = serverResult.querySelector("pre");
+                if (!pre) return;
+                const text = pre.textContent || "";
+                if (!text.trim()) return;
+                try {
+                    const profile = JSON.parse(text);
+                    serverResult.style.display = "none";
+                    renderProfileCard(serverProfileCard, profile);
+                } catch (e) {
+                    // If JSON parse fails, keep showing the raw JSON.
+                }
+            })();
+        })();
+    </script>
+</body>
+
+</html>
+
