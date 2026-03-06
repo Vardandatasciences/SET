@@ -1,6 +1,6 @@
 """Pydantic data models for LinkedIn scraper."""
 
-from .person import Person, Experience, Education, Contact, Accomplishment, Interest
+from .person import Person, Experience, Education, Contact, Accomplishment, Interest, Post
 
 __all__ = [
     "Person",
@@ -9,5 +9,6 @@ __all__ = [
     "Contact",
     "Accomplishment",
     "Interest",
+    "Post",
 ]
 

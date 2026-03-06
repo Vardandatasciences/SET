@@ -8,7 +8,7 @@ from urllib.parse import urljoin
 from playwright.async_api import Page
 
 from .base import BaseScraper
-from ..models import Person, Experience, Education, Accomplishment, Contact
+from ..models import Person, Experience, Education, Accomplishment, Contact, Interest, Post
 from ..callbacks import ProgressCallback, SilentCallback
 from ..core.exceptions import ScrapingError
 
@@ -70,45 +70,58 @@ class PersonScraper(BaseScraper):
             # Check open to work
             open_to_work = await self._check_open_to_work()
 
+            # Get about section
+            about = await self._get_about()
+            await self.callback.on_progress("Got about section", 25)
+
             # Scroll to load content
             await self.scroll_page_to_half()
             await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=3)
 
             # Get experiences
             experiences = await self._get_experiences(linkedin_url)
-            await self.callback.on_progress(f"Got {len(experiences)} experiences", 40)
+            await self.callback.on_progress(f"Got {len(experiences)} experiences", 60)
 
             educations = await self._get_educations(linkedin_url)
             await self.callback.on_progress(f"Got {len(educations)} educations", 50)
 
             accomplishments = await self._get_accomplishments(linkedin_url)
             await self.callback.on_progress(
-                f"Got {len(accomplishments)} accomplishments", 60
+                f"Got {len(accomplishments)} accomplishments", 85
             )
 
             # Get certifications separately with improved extraction
             certifications = await self._get_certifications(linkedin_url)
-            await self.callback.on_progress(f"Got {len(certifications)} certifications", 70)
+            await self.callback.on_progress(f"Got {len(certifications)} certifications", 80)
             
             # Merge certifications into accomplishments
             accomplishments.extend(certifications)
 
             skills = await self._get_skills(linkedin_url)
-            await self.callback.on_progress(f"Got {len(skills)} skills", 80)
+            await self.callback.on_progress(f"Got {len(skills)} skills", 75)
+
+            interests = await self._get_interests(linkedin_url)
+            await self.callback.on_progress(f"Got {len(interests)} interests", 88)
+
+            posts = await self._get_posts(linkedin_url)
+            await self.callback.on_progress(f"Got {len(posts)} posts", 92)
 
             contacts = await self._get_contacts(linkedin_url)
-            await self.callback.on_progress(f"Got {len(contacts)} contacts", 90)
+            await self.callback.on_progress(f"Got {len(contacts)} contacts", 95)
 
             person = Person(
                 linkedin_url=linkedin_url,
                 name=name,
                 location=location,
+                about=about,
                 open_to_work=open_to_work,
                 experiences=experiences,
                 educations=educations,
                 accomplishments=accomplishments,
                 contacts=contacts,
                 skills=skills,
+                interests=interests,
+                posts=posts,
             )
 
             await self.callback.on_progress("Scraping complete", 100)
@@ -253,23 +266,72 @@ class PersonScraper(BaseScraper):
     async def _get_about(self) -> Optional[str]:
         """Extract about section."""
         try:
-            # Find the profile card that contains "About"
-            profile_cards = await self.page.locator(
-                '[data-view-name="profile-card"]'
-            ).all()
-
-            for card in profile_cards:
-                card_text = await card.inner_text()
-                # Check if this card contains "About" heading
-                if card_text.strip().startswith("About"):
-                    # Get the span with aria-hidden to avoid duplication
-                    about_spans = await card.locator('span[aria-hidden="true"]').all()
-                    # Skip the first span (it's the "About" heading), get the content
-                    if len(about_spans) > 1:
-                        about_text = await about_spans[1].text_content()
-                        return about_text.strip() if about_text else None
-
-            return None
+            # Try multiple strategies to find About section
+            about_text = None
+            
+            # Strategy 1: Find section with "About" heading
+            about_selectors = [
+                'section:has(h2:has-text("About"))',
+                '[data-view-name="profile-card"]:has-text("About")',
+                'h2:has-text("About")',
+            ]
+            
+            for selector in about_selectors:
+                try:
+                    about_section = self.page.locator(selector).first
+                    if await about_section.count() > 0:
+                        # Get all text after "About" heading
+                        # Try to find the content div/span
+                        content_selectors = [
+                            'span[aria-hidden="true"]',
+                            '.inline-show-more-text',
+                            '.pv-about__summary-text',
+                            'div[data-view-name="profile-card"] span',
+                        ]
+                        
+                        for content_sel in content_selectors:
+                            content_elements = await about_section.locator(content_sel).all()
+                            for elem in content_elements:
+                                text = await elem.text_content()
+                                if text and text.strip() and len(text.strip()) > 20:
+                                    # Skip if it's just "About"
+                                    if text.strip().lower() != "about":
+                                        about_text = text.strip()
+                                        break
+                        if about_text:
+                            break
+                except:
+                    continue
+            
+            # Strategy 2: Look for "Show more" button and extract expanded text
+            if not about_text:
+                try:
+                    show_more_buttons = await self.page.locator('button:has-text("Show more"), span:has-text("...more")').all()
+                    for button in show_more_buttons:
+                        # Check if it's in the About section
+                        parent = button.locator('xpath=ancestor::section[1]')
+                        if await parent.count() > 0:
+                            parent_text = await parent.text_content()
+                            if "About" in parent_text:
+                                # Click to expand if needed
+                                try:
+                                    await button.click()
+                                    await asyncio.sleep(1)
+                                except:
+                                    pass
+                                # Get expanded text
+                                expanded = await parent.locator('.inline-show-more-text, span[aria-hidden="true"]').all()
+                                for elem in expanded:
+                                    text = await elem.text_content()
+                                    if text and len(text.strip()) > 20:
+                                        about_text = text.strip()
+                                        break
+                        if about_text:
+                            break
+                except:
+                    pass
+            
+            return about_text
         except Exception as e:
             logger.debug(f"Error getting about section: {e}")
             return None
@@ -1082,6 +1144,44 @@ class PersonScraper(BaseScraper):
                                     work_times = line
                                     break
             
+            # Check if this is actually a description or skills text, not a position
+            # Descriptions start with action verbs
+            description_starters = ['developed', 'enhanced', 'engineered', 'created', 'implemented', 
+                                   'executed', 'managed', 'built', 'designed', 'led', 'improved', 
+                                   'optimized', 'achieved', 'reduced', 'increased', 'delivered', 
+                                   'established', 'launched', 'coordinated', 'facilitated']
+            
+            # Skills indicators
+            skills_indicators = ['skills', 'skill', 'endorsements', 'endorsement', 'and +', 'and +8', 'and +10']
+            
+            # Check if position_title looks like a description or skills
+            if position_title:
+                pos_lower = position_title.lower()
+                # If it starts with a description verb, it's actually a description
+                if any(pos_lower.startswith(starter) for starter in description_starters):
+                    # This is a description, not a position title
+                    description = position_title
+                    position_title = None
+                # If it contains skills indicators, it's skills text, not a position
+                elif any(indicator in pos_lower for indicator in skills_indicators):
+                    # This is skills text, skip this item
+                    logger.debug(f"Filtered out skills text: {position_title}")
+                    return None
+                # If it's very long (likely a description)
+                elif len(position_title) > 100:
+                    description = position_title
+                    position_title = None
+            
+            # Also check company_name
+            if company_name:
+                comp_lower = company_name.lower()
+                if any(comp_lower.startswith(starter) for starter in description_starters):
+                    description = company_name
+                    company_name = None
+                elif any(indicator in comp_lower for indicator in skills_indicators):
+                    logger.debug(f"Filtered out skills text in company: {company_name}")
+                    return None
+            
             # Final validation - we need at least position or company
             # Also filter out obviously non-experience items
             if position_title or company_name:
@@ -1097,11 +1197,69 @@ class PersonScraper(BaseScraper):
                 
                 from_date, to_date, duration = self._parse_work_times(work_times)
                 
+                # Extract description - look for bullet points or long text
+                if not description:
+                    try:
+                        # Look for description in the item - usually in ul/li or div with class containing "description"
+                        desc_selectors = [
+                            'ul.pvs-list__container li',
+                            '.pvs-list__container li',
+                            'div[data-view-name="profile-card"] ul li',
+                            '.inline-show-more-text',
+                        ]
+                        
+                        description_parts = []
+                        for desc_sel in desc_selectors:
+                            desc_elements = await item.locator(desc_sel).all()
+                            for desc_elem in desc_elements:
+                                text = await desc_elem.text_content()
+                                if text and text.strip():
+                                    text = text.strip()
+                                    # Filter out non-description text
+                                    if (len(text) > 20 and 
+                                        not any(skip in text.lower() for skip in ['endorse', 'show more', 'hide', 'linkedin', 'view profile', 'skills', 'skill']) and
+                                        (any(text.startswith(starter.capitalize()) for starter in description_starters) or
+                                         text.count('.') >= 1 or text.count(',') >= 2)):
+                                        description_parts.append(text)
+                        
+                        # Also check for expanded description text
+                        if not description_parts:
+                            # Look for "Show more" and expanded content
+                            show_more = await item.locator('button:has-text("Show more"), span:has-text("...more")').first
+                            if await show_more.count() > 0:
+                                try:
+                                    await show_more.click()
+                                    await asyncio.sleep(0.5)
+                                    # Get expanded text
+                                    expanded = await item.locator('.inline-show-more-text, span[aria-hidden="true"]').all()
+                                    for elem in expanded:
+                                        text = await elem.text_content()
+                                        if text and len(text.strip()) > 20:
+                                            text_lower = text.lower()
+                                            # Make sure it's not skills text
+                                            if not any(indicator in text_lower for indicator in skills_indicators):
+                                                description_parts.append(text.strip())
+                                except:
+                                    pass
+                        
+                        if description_parts:
+                            # Join bullet points with newlines
+                            description = '\n'.join(description_parts)
+                            # Clean up - remove duplicates and excessive whitespace
+                            description = '\n'.join([line.strip() for line in description.split('\n') if line.strip()])
+                    except Exception as e:
+                        logger.debug(f"Error extracting description: {e}")
+                
                 # If we only have one, use it for both (better than nothing)
                 if not position_title and company_name:
                     position_title = company_name
                 elif not company_name and position_title:
                     company_name = position_title
+                
+                # Final check - if we don't have a valid position_title or company_name, skip
+                if not position_title and not company_name:
+                    logger.debug("No valid position or company found, skipping")
+                    return None
                 
                 return Experience(
                     position_title=position_title,
@@ -1111,7 +1269,7 @@ class PersonScraper(BaseScraper):
                     to_date=to_date,
                     duration=duration,
                     location=location if location else None,
-                    description=None,
+                    description=description,
                 )
             
             # Fallback: try to parse from links
@@ -1677,6 +1835,32 @@ class PersonScraper(BaseScraper):
                         
                         edu = await self._parse_education_item(item)
                         if edu and edu.institution_name:
+                            # Filter out activities and societies (e.g., "Transformers", "cricket", "Chess")
+                            # These are not educational institutions
+                            institution_lower = edu.institution_name.lower().strip()
+                            activity_keywords = [
+                                'transformers', 'cricket', 'chess', 'badminton', 'shuttle',
+                                'soccer', 'football', 'basketball', 'tennis', 'volleyball',
+                                'drama', 'theater', 'music', 'dance', 'debate', 'robotics',
+                                'coding', 'hackathon', 'club', 'society', 'association',
+                                'activities', 'societies'
+                            ]
+                            
+                            # Skip if it's exactly an activity keyword or contains one
+                            if institution_lower in activity_keywords or any(keyword in institution_lower for keyword in activity_keywords):
+                                logger.debug(f"Filtered out activity as education: {edu.institution_name}")
+                                continue
+                            
+                            # Also check if it's too short (likely not an institution)
+                            if len(edu.institution_name.strip()) < 5:
+                                logger.debug(f"Filtered out too short education: {edu.institution_name}")
+                                continue
+                            
+                            # Check if it's a single word that's likely an activity (Transformers, Chess, etc.)
+                            if len(edu.institution_name.split()) == 1 and institution_lower in activity_keywords:
+                                logger.debug(f"Filtered out single-word activity: {edu.institution_name}")
+                                continue
+                            
                             logger.debug(f"Added education: {edu.institution_name} - {edu.degree}")
                             educations.append(edu)
                         else:
@@ -2185,20 +2369,18 @@ class PersonScraper(BaseScraper):
             # Each certification block is separated by <hr> tags
             # Try to find certification containers
             
-            # Strategy 1: Look for divs that contain both certification name and issuer
+            # Strategy 1: Look for list items (li) which contain certifications
+            cert_items = await main_element.locator('li').all()
+            logger.debug(f"Found {len(cert_items)} list items")
+            
+            # Strategy 2: Look for divs that contain both certification name and issuer
             # Each cert has a structure with company logo + text content
-            
-            # Find all <hr> elements which separate certifications
-            hr_elements = await main_element.locator('hr').all()
-            logger.debug(f"Found {len(hr_elements)} hr separator elements")
-            
-            # If we have hr separators, try to extract blocks between them
-            if len(hr_elements) > 0:
-                # Get all paragraphs within the main content area before the first "More profiles" section
-                # Look for the main certifications container
+            if not cert_items or len(cert_items) < 2:
+                # Find all <hr> elements which separate certifications
+                hr_elements = await main_element.locator('hr').all()
+                logger.debug(f"Found {len(hr_elements)} hr separator elements")
                 
                 # Try to find all certification item containers
-                # They are typically in divs that contain a logo and text
                 cert_containers = await main_element.locator('div._86f1bd63, div[class*="_86f1bd63"]').all()
                 logger.debug(f"Found {len(cert_containers)} potential certification containers")
                 
@@ -2206,6 +2388,8 @@ class PersonScraper(BaseScraper):
                     # Fallback: try to find divs containing logos/images
                     cert_containers = await main_element.locator('div:has(img[alt*="logo"])').all()
                     logger.debug(f"Found {len(cert_containers)} containers with logos (fallback)")
+            else:
+                cert_containers = cert_items
                 
                 seen_titles = set()
                 
@@ -2216,71 +2400,88 @@ class PersonScraper(BaseScraper):
                         if not full_text or len(full_text.strip()) < 10:
                             continue
                         
-                        # Get all paragraphs within this container
-                        paragraphs = await container.locator('p').all()
-                        if len(paragraphs) < 2:
+                        # Skip if it's clearly not a certification (navigation, ads, etc.)
+                        if any(skip in full_text.lower() for skip in [
+                            "navigate back", "why am i seeing", "manage your ad", 
+                            "hide or report", "tell us why", "your feedback",
+                            "more profiles", "people you may know"
+                        ]):
                             continue
                         
+                        # Try to extract using the accomplishment parser
+                        cert = await self._parse_accomplishment_item(container, "certification")
+                        if cert and cert.title and cert.title not in seen_titles:
+                            # Additional validation
+                            if len(cert.title) > 5 and len(cert.title) < 300:
+                                logger.debug(f"Found certification {idx+1}: {cert.title} by {cert.issuer}")
+                                certifications.append(cert)
+                                seen_titles.add(cert.title)
+                                continue
+                        
+                        # Fallback: manual extraction
+                        # Get all spans with aria-hidden (structured data)
+                        spans = await container.locator('span[aria-hidden="true"]').all()
                         texts = []
-                        for p in paragraphs[:10]:  # Limit to first 10 paragraphs
-                            p_text = await p.text_content()
-                            if p_text and len(p_text.strip()) > 2:
-                                texts.append(p_text.strip())
+                        for span in spans:
+                            text = await span.text_content()
+                            if text and text.strip():
+                                text = text.strip()
+                                # Skip UI elements
+                                if any(skip in text.lower() for skip in [
+                                    "show credential", "see credential", "skills:", 
+                                    "navigate back", "licenses & certifications"
+                                ]):
+                                    continue
+                                if len(text) > 3 and len(text) < 200:
+                                    texts.append(text)
                         
-                        if len(texts) < 2:
-                            continue
+                        # If no spans, try paragraphs
+                        if not texts:
+                            paragraphs = await container.locator('p').all()
+                            for p in paragraphs[:5]:
+                                p_text = await p.text_content()
+                                if p_text and len(p_text.strip()) > 3:
+                                    texts.append(p_text.strip())
                         
                         # Extract certification details
                         title = ""
                         issuer = ""
                         issued_date = ""
                         
-                        # First meaningful text is usually the title
-                        # Second is the issuer
-                        # Third might be the issued date or skills
-                        
-                        for text in texts:
+                        for i, text in enumerate(texts):
                             # Skip navigation and UI elements
-                            if any(skip in text for skip in [
-                                "Licenses & certifications",
-                                "Skills:",
-                                "Navigate back",
-                                "Why am I seeing this",
-                                "Manage your ad",
-                                "Hide or report",
-                                "Tell us why",
-                                "Your feedback",
-                                ".pdf",  # Skip PDF filenames
-                                "ASZ Cybersecurity",  # Skip PDF references
-                                "Show credential",
-                                "See credential",
+                            if any(skip in text.lower() for skip in [
+                                "licenses & certifications", "navigate back",
+                                "why am i seeing", "manage your ad", "show credential", "see credential"
                             ]):
                                 continue
                             
-                            if not title:
-                                # First valid text is the title
-                                if len(text) > 10 and not text.startswith("Issued"):
-                                    title = text
-                            elif not issuer and not text.startswith("Issued"):
-                                # Second valid text is the issuer
-                                if len(text) < 100:
-                                    issuer = text
-                            elif text.startswith("Issued"):
-                                # Date line
-                                issued_date = text
-                                break
+                            # Check for date patterns
+                            if any(month in text for month in ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                                                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]):
+                                if "Issued" in text:
+                                    issued_date = text.replace("Issued ", "").strip()
+                                elif not issued_date:
+                                    issued_date = text.strip()
+                                continue
+                            
+                            # First meaningful text is usually the title
+                            if not title and len(text) > 10:
+                                title = text
+                            # Second is usually the issuer
+                            elif not issuer and len(text) < 100 and not text.startswith("Issued"):
+                                issuer = text
                         
                         # Validate and add certification
-                        if title and issuer and title not in seen_titles:
+                        if title and title not in seen_titles:
                             # Clean up whitespace
                             title = " ".join(title.split())
-                            issuer = " ".join(issuer.split())
+                            if issuer:
+                                issuer = " ".join(issuer.split())
                             
-                            # Additional validation: title should be reasonable
-                            if (len(title) > 10 and 
-                                len(title) < 200 and
-                                len(issuer) < 100 and
-                                not any(bad in title.lower() for bad in ["why am i", "manage your", "tell us"])):
+                            # Additional validation
+                            if (len(title) > 5 and len(title) < 300 and
+                                not any(bad in title.lower() for bad in ["why am i", "manage your", "tell us", "navigate"])):
                                 
                                 logger.debug(f"Found certification {idx+1}: {title} by {issuer} ({issued_date})")
                                 
@@ -2288,7 +2489,7 @@ class PersonScraper(BaseScraper):
                                     Accomplishment(
                                         category="certification",
                                         title=title,
-                                        issuer=issuer,
+                                        issuer=issuer if issuer else None,
                                         issued_date=issued_date if issued_date else None,
                                     )
                                 )
@@ -2310,144 +2511,207 @@ class PersonScraper(BaseScraper):
     async def _get_skills(self, base_url: str) -> list[str]:
         """Extract skills from the LinkedIn profile."""
         skills = []
+        seen_skills = set()
         
         try:
-            # Navigate to skills detail page
-            skills_url = urljoin(base_url, "details/skills/")
-            await self.navigate_and_wait(skills_url)
-            await self.page.wait_for_selector("main", timeout=10000)
-            await self.wait_and_focus(2)
+            # First, try to extract skills from main profile page
+            try:
+                # Look for Skills section on main page
+                skills_section = self.page.locator('section:has(h2:has-text("Skills")), h2:has-text("Skills")').first
+                if await skills_section.count() > 0:
+                    # Find parent section
+                    parent = skills_section.locator('xpath=ancestor::section[1]')
+                    if await parent.count() > 0:
+                        # Look for skill names - they're usually in spans or buttons
+                        skill_elements = await parent.locator('span, button, a').all()
+                        for elem in skill_elements[:50]:  # Limit to first 50
+                            try:
+                                text = await elem.text_content()
+                                if text:
+                                    text = text.strip()
+                                    # Filter for skill-like text (not buttons like "Endorse", "Show all")
+                                    if (text and 
+                                        len(text) > 2 and 
+                                        len(text) < 50 and
+                                        text.lower() not in ['endorse', 'show all', 'show more', 'hide', 'skills'] and
+                                        not text.startswith('(') and  # Skip endorsement counts
+                                        not text.isdigit()):
+                                        # Check if it looks like a skill name
+                                        if text.lower() not in seen_skills:
+                                            skills.append(text)
+                                            seen_skills.add(text.lower())
+                            except:
+                                continue
+            except Exception as e:
+                logger.debug(f"Error extracting skills from main page: {e}")
             
-            # Scroll to load all skills
-            await self.scroll_page_to_half()
-            await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=5)
-            
-            # Wait a bit more for dynamic content
-            await asyncio.sleep(2)
-            
-            main_element = self.page.locator('main')
-            if await main_element.count() == 0:
-                logger.debug("No main element found on skills page")
-                return skills
-            
-            seen_skills = set()
-            
-            # Strategy: Find all "Endorse" buttons (one per skill) and extract skill names
-            # LinkedIn concatenates skill names with organization names without spaces
-            # Examples:
-            # - "ProgrammingAnil Neerukonda Institute...Endorse"
-            # - "Computer VisionMachine Learning Intern at Ziegler...Endorse"
-            # - "Python (Programming Language)Endorse"
-            
-            logger.debug("Looking for Endorse buttons to extract skills")
-            
-            endorse_buttons = await main_element.locator('button:has-text("Endorse")').all()
-            logger.debug(f"Found {len(endorse_buttons)} Endorse buttons")
-            
-            for idx, button in enumerate(endorse_buttons):
-                try:
-                    # Try to find the parent container
-                    parent_containers = [
-                        button.locator('xpath=ancestor::li[1]'),
-                        button.locator('xpath=ancestor::div[contains(@class, "pvs-list__item")][1]'),
-                        button.locator('xpath=ancestor::div[1]'),
-                        button.locator('xpath=..'),  # Direct parent
-                    ]
-                    
-                    parent = None
-                    for container in parent_containers:
-                        if await container.count() > 0:
-                            parent = container
-                            break
-                    
-                    if not parent:
-                        logger.debug(f"No parent container found for button {idx+1}")
-                        continue
-                    
-                    # Get full text of the parent
-                    full_text = await parent.text_content()
-                    if not full_text or not full_text.strip():
-                        logger.debug(f"Empty text content for skill {idx+1}")
-                        continue
-                    
-                    full_text = full_text.strip()
-                    
-                    # Remove "Endorse" from the end
-                    if full_text.endswith('Endorse'):
-                        full_text = full_text[:-7].strip()
-                    
-                    logger.debug(f"Processing skill {idx+1}: {full_text[:80]}...")
-                    
-                    # Now extract the skill name from the beginning
-                    # The skill name ends when we hit organization/job title patterns
-                    skill_name = full_text  # Default to full text
-                    matched = False
-                    
-                    # Strategy 1: Try to find where job title/organization starts
-                    # Look for patterns like "Machine Learning Intern at", "Anil Neerukonda", etc.
-                    
-                    # First, try splitting by " at " (indicates job title)
-                    if ' at ' in full_text:
-                        parts = full_text.split(' at ')
-                        # Check if the part before " at " contains a job title pattern
-                        before_at = parts[0]
-                        # Look for job titles at the end (e.g., "Computer VisionMachine Learning Intern")
-                        job_title_pattern = r'(.*?)([A-Z][a-z]+ [A-Z][a-z]+ Intern|Developer|Engineer|Analyst)$'
-                        job_match = re.match(job_title_pattern, before_at)
-                        if job_match and job_match.group(1).strip():
-                            skill_name = job_match.group(1).strip()
-                            matched = True
-                            logger.debug(f"Extracted before job title: {skill_name}")
-                    
-                    # Strategy 2: Try organization patterns (e.g., "Anil Neerukonda Institute")
-                    if not matched:
-                        org_start_pattern = r'^(.*?)([A-Z][a-z]+\s+[A-Z][a-z]+\s+Institute|[A-Z][a-z]+\s+University|Anil\s+Neerukonda)'
-                        match = re.match(org_start_pattern, full_text)
-                        if match:
-                            skill_name = match.group(1).strip()
-                            matched = True
-                            logger.debug(f"Extracted before organization: {skill_name}")
-                    
-                    # Strategy 3: Detect camelCase concatenation (e.g., "ProgrammingAnil")
-                    # Find first occurrence of lowercase followed by uppercase (without space)
-                    if not matched and len(full_text) > 3:
-                        camel_pattern = r'^(.*?[a-z])([A-Z][a-z].*)'
-                        camel_match = re.match(camel_pattern, full_text)
-                        if camel_match:
-                            potential = camel_match.group(1).strip()
-                            # Make sure it's reasonable (not too short)
-                            if len(potential) > 2:
-                                skill_name = potential
-                                matched = True
-                                logger.debug(f"Extracted using camelCase split: {skill_name}")
-                    
-                    # Clean up endorsement information
-                    # Remove patterns like "(0 endorsements)", "(5 endorsements)", etc.
-                    endorsement_patterns = [
-                        r'\s*\(\d+\s+endorsements?\)',  # (0 endorsements), (5 endorsement)
-                        r'\s*\d+\s+endorsements?',       # 5 endorsements
-                    ]
-                    for pattern in endorsement_patterns:
-                        skill_name = re.sub(pattern, '', skill_name, flags=re.IGNORECASE)
-                    
-                    skill_name = skill_name.strip()
-                    
-                    # Final validation
-                    if skill_name and skill_name not in ['Endorse', 'Show all', '']:
-                        if skill_name not in seen_skills:
-                            skills.append(skill_name)
-                            seen_skills.add(skill_name)
-                            logger.debug(f"✓ Extracted skill {idx+1}: {skill_name}")
-                        else:
-                            logger.debug(f"Already extracted: {skill_name}")
-                    else:
-                        logger.debug(f"Invalid skill name: {skill_name}")
+            # Also navigate to skills detail page for more skills
+            try:
+                skills_url = urljoin(base_url, "details/skills/")
+                await self.navigate_and_wait(skills_url)
+                await self.page.wait_for_selector("main", timeout=10000)
+                await self.wait_and_focus(2)
                 
-                except Exception as e:
-                    logger.debug(f"Error extracting skill from button {idx+1}: {e}")
-                    import traceback
-                    logger.debug(traceback.format_exc())
-                    continue
+                # Scroll to load all skills
+                await self.scroll_page_to_half()
+                await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=5)
+                
+                # Wait a bit more for dynamic content
+                await asyncio.sleep(2)
+                
+                main_element = self.page.locator('main')
+                if await main_element.count() == 0:
+                    logger.debug("No main element found on skills page")
+                else:
+                    # Strategy 1: Find all "Endorse" buttons (one per skill) and extract skill names
+                    logger.debug("Looking for Endorse buttons to extract skills")
+                    
+                    endorse_buttons = await main_element.locator('button:has-text("Endorse"), button[aria-label*="Endorse"]').all()
+                    logger.debug(f"Found {len(endorse_buttons)} Endorse buttons")
+                    
+                    # Strategy 2: Also look for skill names directly - find spans before Endorse buttons
+                    if len(endorse_buttons) == 0:
+                        # Try to find skill names in list items or divs
+                        skill_containers = await main_element.locator('li, div[class*="pvs-list"], div[class*="skill"]').all()
+                        logger.debug(f"Found {len(skill_containers)} potential skill containers")
+                        
+                        for container in skill_containers[:50]:  # Limit to first 50
+                            try:
+                                # Get all spans with text
+                                spans = await container.locator('span[aria-hidden="true"]').all()
+                                for span in spans:
+                                    text = await span.text_content()
+                                    if text:
+                                        text = text.strip()
+                                        # Look for skill-like text (not "Endorse", "Show all", etc.)
+                                        if (text and 
+                                            len(text) > 2 and 
+                                            len(text) < 100 and
+                                            'endorse' not in text.lower() and
+                                            'show all' not in text.lower() and
+                                            'show more' not in text.lower() and
+                                            not text.startswith('(') and
+                                            not text.isdigit() and
+                                            not any(char in text for char in ['·', '•']) and  # Skip metadata
+                                            text.lower() not in ['skills', 'skill']):
+                                            # Clean up skill name
+                                            skill_name = text.split('Endorse')[0].split('Show')[0].strip()
+                                            skill_name = re.sub(r'\s*\(\d+\s+endorsements?\)', '', skill_name, flags=re.IGNORECASE)
+                                            skill_name = skill_name.strip()
+                                            
+                                            if skill_name and skill_name.lower() not in seen_skills and len(skill_name) > 2:
+                                                skills.append(skill_name)
+                                                seen_skills.add(skill_name.lower())
+                                                logger.debug(f"Extracted skill: {skill_name}")
+                            except:
+                                continue
+                    
+                    for idx, button in enumerate(endorse_buttons):
+                        try:
+                            # Try to find the parent container
+                            parent_containers = [
+                                button.locator('xpath=ancestor::li[1]'),
+                                button.locator('xpath=ancestor::div[contains(@class, "pvs-list__item")][1]'),
+                                button.locator('xpath=ancestor::div[1]'),
+                                button.locator('xpath=..'),  # Direct parent
+                            ]
+                            
+                            parent = None
+                            for container in parent_containers:
+                                if await container.count() > 0:
+                                    parent = container
+                                    break
+                            
+                            if not parent:
+                                logger.debug(f"No parent container found for button {idx+1}")
+                                continue
+                            
+                            # Get full text of the parent
+                            full_text = await parent.text_content()
+                            if not full_text or not full_text.strip():
+                                logger.debug(f"Empty text content for skill {idx+1}")
+                                continue
+                            
+                            full_text = full_text.strip()
+                            
+                            # Remove "Endorse" from the end
+                            if full_text.endswith('Endorse'):
+                                full_text = full_text[:-7].strip()
+                            
+                            logger.debug(f"Processing skill {idx+1}: {full_text[:80]}...")
+                            
+                            # Now extract the skill name from the beginning
+                            # The skill name ends when we hit organization/job title patterns
+                            skill_name = full_text  # Default to full text
+                            matched = False
+                            
+                            # Strategy 1: Try to find where job title/organization starts
+                            # Look for patterns like "Machine Learning Intern at", "Anil Neerukonda", etc.
+                            
+                            # First, try splitting by " at " (indicates job title)
+                            if ' at ' in full_text:
+                                parts = full_text.split(' at ')
+                                # Check if the part before " at " contains a job title pattern
+                                before_at = parts[0]
+                                # Look for job titles at the end (e.g., "Computer VisionMachine Learning Intern")
+                                job_title_pattern = r'(.*?)([A-Z][a-z]+ [A-Z][a-z]+ Intern|Developer|Engineer|Analyst)$'
+                                job_match = re.match(job_title_pattern, before_at)
+                                if job_match and job_match.group(1).strip():
+                                    skill_name = job_match.group(1).strip()
+                                    matched = True
+                                    logger.debug(f"Extracted before job title: {skill_name}")
+                            
+                            # Strategy 2: Try organization patterns (e.g., "Anil Neerukonda Institute")
+                            if not matched:
+                                org_start_pattern = r'^(.*?)([A-Z][a-z]+\s+[A-Z][a-z]+\s+Institute|[A-Z][a-z]+\s+University|Anil\s+Neerukonda)'
+                                match = re.match(org_start_pattern, full_text)
+                                if match:
+                                    skill_name = match.group(1).strip()
+                                    matched = True
+                                    logger.debug(f"Extracted before organization: {skill_name}")
+                            
+                            # Strategy 3: Detect camelCase concatenation (e.g., "ProgrammingAnil")
+                            # Find first occurrence of lowercase followed by uppercase (without space)
+                            if not matched and len(full_text) > 3:
+                                camel_pattern = r'^(.*?[a-z])([A-Z][a-z].*)'
+                                camel_match = re.match(camel_pattern, full_text)
+                                if camel_match:
+                                    potential = camel_match.group(1).strip()
+                                    # Make sure it's reasonable (not too short)
+                                    if len(potential) > 2:
+                                        skill_name = potential
+                                        matched = True
+                                        logger.debug(f"Extracted using camelCase split: {skill_name}")
+                            
+                            # Clean up endorsement information
+                            # Remove patterns like "(0 endorsements)", "(5 endorsements)", etc.
+                            endorsement_patterns = [
+                                r'\s*\(\d+\s+endorsements?\)',  # (0 endorsements), (5 endorsement)
+                                r'\s*\d+\s+endorsements?',       # 5 endorsements
+                            ]
+                            for pattern in endorsement_patterns:
+                                skill_name = re.sub(pattern, '', skill_name, flags=re.IGNORECASE)
+                            
+                            skill_name = skill_name.strip()
+                            
+                            # Final validation
+                            if skill_name and skill_name not in ['Endorse', 'Show all', '']:
+                                if skill_name.lower() not in seen_skills:
+                                    skills.append(skill_name)
+                                    seen_skills.add(skill_name.lower())
+                                    logger.debug(f"✓ Extracted skill {idx+1}: {skill_name}")
+                                else:
+                                    logger.debug(f"Already extracted: {skill_name}")
+                            else:
+                                logger.debug(f"Invalid skill name: {skill_name}")
+                        
+                        except Exception as e:
+                            logger.debug(f"Error extracting skill from button {idx+1}: {e}")
+                            import traceback
+                            logger.debug(traceback.format_exc())
+                            continue
+            except Exception as e:
+                logger.debug(f"Error navigating to skills detail page: {e}")
             
             logger.info(f"Extracted {len(skills)} skills: {skills[:10] if len(skills) <= 10 else skills[:10] + ['...']}")
             
@@ -2457,6 +2721,364 @@ class PersonScraper(BaseScraper):
             logger.debug(traceback.format_exc())
         
         return skills
+    
+    async def _get_interests(self, base_url: str) -> list[Interest]:
+        """Extract interests from the LinkedIn profile."""
+        interests = []
+        
+        try:
+            # Try to extract from main profile page first
+            try:
+                # Look for Interests section on main page
+                interests_section = self.page.locator('section:has(h2:has-text("Interests")), h2:has-text("Interests")').first
+                if await interests_section.count() > 0:
+                    # Find parent section
+                    parent = interests_section.locator('xpath=ancestor::section[1]')
+                    if await parent.count() > 0:
+                        # Look for links in the interests section
+                        interest_links = await parent.locator('a[href*="/company/"], a[href*="/in/"], a[href*="/groups/"]').all()
+                        for link in interest_links[:20]:  # Limit to first 20
+                            try:
+                                href = await link.get_attribute('href')
+                                text = await link.text_content()
+                                if text and href:
+                                    text = text.strip()
+                                    # Clean up text - remove extra info like "followers", "members", etc.
+                                    # Extract just the name (first line or before newline)
+                                    name = text.split('\n')[0].strip()
+                                    # Remove duplicate names (e.g., "Satya NadellaSatya Nadella" -> "Satya Nadella")
+                                    words = name.split()
+                                    if len(words) > 1 and words[:len(words)//2] == words[len(words)//2:]:
+                                        name = ' '.join(words[:len(words)//2])
+                                    
+                                    # Determine category based on URL
+                                    if '/company/' in href:
+                                        category = 'company'
+                                    elif '/in/' in href:
+                                        category = 'person'
+                                    elif '/groups/' in href:
+                                        category = 'group'
+                                    else:
+                                        category = 'other'
+                                    
+                                    if name and len(name) > 2 and len(name) < 100:
+                                        interests.append(Interest(
+                                            name=name,
+                                            category=category,
+                                            linkedin_url=href if href.startswith('http') else f"https://www.linkedin.com{href}"
+                                        ))
+                            except:
+                                continue
+            except:
+                pass
+            
+            # Also try navigating to interests detail page
+            try:
+                interests_url = urljoin(base_url, "details/interests/")
+                await self.navigate_and_wait(interests_url)
+                await self.page.wait_for_selector("main", timeout=10000)
+                await self.wait_and_focus(2)
+                
+                # Scroll to load all interests
+                await self.scroll_page_to_half()
+                await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=3)
+                
+                main_element = self.page.locator('main')
+                if await main_element.count() > 0:
+                    # Look for interest links
+                    interest_links = await main_element.locator('a[href*="/company/"], a[href*="/in/"], a[href*="/groups/"], a[href*="/schools/"]').all()
+                    seen_names = {i.name.lower() for i in interests}
+                    
+                    for link in interest_links:
+                        try:
+                            href = await link.get_attribute('href')
+                            text = await link.text_content()
+                            if text and href:
+                                text = text.strip()
+                                if text.lower() not in seen_names and len(text) > 2:
+                                    # Determine category
+                                    if '/company/' in href:
+                                        category = 'company'
+                                    elif '/in/' in href:
+                                        category = 'person'
+                                    elif '/groups/' in href:
+                                        category = 'group'
+                                    elif '/schools/' in href:
+                                        category = 'school'
+                                    else:
+                                        category = 'other'
+                                    
+                                    interests.append(Interest(
+                                        name=text,
+                                        category=category,
+                                        linkedin_url=href if href.startswith('http') else f"https://www.linkedin.com{href}"
+                                    ))
+                                    seen_names.add(text.lower())
+                        except:
+                            continue
+            except Exception as e:
+                logger.debug(f"Error navigating to interests page: {e}")
+            
+            logger.info(f"Extracted {len(interests)} interests")
+            
+        except Exception as e:
+            logger.warning(f"Error getting interests: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+        
+        return interests
+    
+    async def _get_posts(self, base_url: str) -> list[Post]:
+        """Extract posts/activity from the LinkedIn profile."""
+        posts = []
+        
+        try:
+            # Navigate back to main profile page first
+            await self.navigate_and_wait(base_url)
+            await self.page.wait_for_selector("main", timeout=10000)
+            await self.wait_and_focus(2)
+            
+            # Scroll to load Activity section - scroll more to load all posts
+            await self.scroll_page_to_half()
+            await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=5)
+            await asyncio.sleep(1)
+            
+            # Try to click "Show more" or "See more posts" if available
+            try:
+                show_more_buttons = await self.page.locator('button:has-text("Show more"), span:has-text("Show more"), button:has-text("See more")').all()
+                for button in show_more_buttons[:3]:  # Try first 3 "Show more" buttons
+                    try:
+                        await button.click()
+                        await asyncio.sleep(1)
+                        await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=2)
+                    except:
+                        continue
+            except:
+                pass
+            
+            # Try multiple strategies to find posts
+            post_containers = []
+            
+            # Strategy 1: Look for Activity section and posts within it
+            activity_selectors = [
+                'section:has(h2:has-text("Activity"))',
+                'h2:has-text("Activity")',
+                '[data-view-name="profile-card"]:has-text("Activity")',
+            ]
+            
+            for selector in activity_selectors:
+                try:
+                    activity_section = self.page.locator(selector).first
+                    if await activity_section.count() > 0:
+                        # Find parent section
+                        parent = activity_section.locator('xpath=ancestor::section[1], xpath=ancestor::div[contains(@class, "profile-section")][1]').first
+                        if await parent.count() > 0:
+                            # Look for post containers with multiple selectors
+                            containers = await parent.locator('div[data-view-name="feed-update"], article, div.feed-shared-update-v2, div[class*="feed"], div[class*="update"]').all()
+                            if containers:
+                                post_containers.extend(containers)
+                                logger.debug(f"Found {len(containers)} post containers using selector: {selector}")
+                                break
+                except:
+                    continue
+            
+            # Strategy 2: Look for posts directly in main content area
+            if not post_containers:
+                try:
+                    main_element = self.page.locator('main')
+                    if await main_element.count() > 0:
+                        # Look for post-like structures
+                        containers = await main_element.locator('div[data-view-name="feed-update"], article, div.feed-shared-update-v2, div[class*="feed-update"], div[class*="activity-item"]').all()
+                        if containers:
+                            post_containers.extend(containers)
+                            logger.debug(f"Found {len(containers)} post containers in main area")
+                except:
+                    pass
+            
+            # Strategy 3: Look for any divs that look like posts (have timestamps and content)
+            if not post_containers:
+                try:
+                    main_element = self.page.locator('main')
+                    if await main_element.count() > 0:
+                        # Find divs that contain time elements (likely posts)
+                        all_divs = await main_element.locator('div').all()
+                        for div in all_divs[:50]:  # Check first 50 divs
+                            try:
+                                # Check if it has time element and text content
+                                has_time = await div.locator('time, span:has-text("mo"), span:has-text("yr"), span:has-text("day")').count() > 0
+                                text_content = await div.text_content()
+                                if has_time and text_content and len(text_content.strip()) > 50:
+                                    # Likely a post
+                                    post_containers.append(div)
+                                    if len(post_containers) >= 10:
+                                        break
+                            except:
+                                continue
+                except:
+                    pass
+            
+            logger.debug(f"Total post containers found: {len(post_containers)}")
+            
+            # Extract posts from containers - try to get all visible posts
+            for idx, container in enumerate(post_containers[:50]):  # Limit to first 50 posts
+                try:
+                    # Extract post content - try multiple selectors
+                    content = None
+                    content_selectors = [
+                        '.feed-shared-text',
+                        '.feed-shared-update-v2__description',
+                        'div.feed-shared-text',
+                        'span.feed-shared-text',
+                        'div[data-view-name="feed-update"] span[aria-hidden="true"]',
+                        'article span[aria-hidden="true"]',
+                    ]
+                    
+                    for content_sel in content_selectors:
+                        content_elems = await container.locator(content_sel).all()
+                        for content_elem in content_elems:
+                            text = await content_elem.text_content()
+                            if text:
+                                text = text.strip()
+                                # Skip metadata like "posted this", "Muni Syam", timestamps
+                                if (len(text) > 30 and 
+                                    'posted this' not in text.lower() and
+                                    not text.startswith('Muni Syam') and
+                                    not text.startswith('posted') and
+                                    'like' not in text.lower() and
+                                    'comment' not in text.lower() and
+                                    'share' not in text.lower()):
+                                    content = text
+                                    break
+                        if content:
+                            break
+                    
+                    # If no content found, try getting all text and filtering
+                    if not content or len(content.strip()) < 20:
+                        full_text = await container.text_content()
+                        if full_text:
+                            # Split into lines and filter
+                            lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+                            # Filter out metadata, UI elements, and short lines
+                            content_lines = []
+                            for l in lines:
+                                l_lower = l.lower()
+                                # Skip metadata and UI elements
+                                if (len(l) > 30 and 
+                                    'posted this' not in l_lower and
+                                    not l.startswith('Muni Syam') and
+                                    not l.startswith('posted') and
+                                    'like' not in l_lower and
+                                    'comment' not in l_lower and
+                                    'share' not in l_lower and
+                                    'follow' not in l_lower and
+                                    'show more' not in l_lower and
+                                    'hide' not in l_lower and
+                                    not l.endswith('mo') and  # Skip "2mo" type timestamps
+                                    not l.endswith('yr') and
+                                    not l.endswith('day') and
+                                    not re.match(r'^\d+\s*(mo|yr|day|hour|min)', l, re.IGNORECASE)):  # Skip timestamp patterns
+                                    content_lines.append(l)
+                            
+                            if content_lines:
+                                # Join meaningful lines, but skip the first if it's metadata
+                                if len(content_lines) > 1:
+                                    # Check if first line is metadata
+                                    first_line = content_lines[0].lower()
+                                    if any(meta in first_line for meta in ['posted', 'shared', 'commented', 'liked']):
+                                        content = ' '.join(content_lines[1:6])  # Skip first, take next 5
+                                    else:
+                                        content = ' '.join(content_lines[:5])  # Take first 5
+                                else:
+                                    content = content_lines[0]
+                    
+                    if not content or len(content.strip()) < 20:
+                        continue
+                    
+                    # Extract timestamp - look for time elements
+                    timestamp = None
+                    time_selectors = [
+                        'time[datetime]',
+                        'time',
+                        'span.time-badge',
+                        '.feed-shared-actor__sub-description',
+                    ]
+                    for time_sel in time_selectors:
+                        time_elems = await container.locator(time_sel).all()
+                        for time_elem in time_elems:
+                            # Try datetime attribute first
+                            dt = await time_elem.get_attribute('datetime')
+                            if dt:
+                                timestamp = dt
+                                break
+                            # Otherwise get text content
+                            text = await time_elem.text_content()
+                            if text:
+                                text = text.strip()
+                                # Check if it looks like a timestamp (contains time indicators)
+                                if any(indicator in text.lower() for indicator in ['mo', 'yr', 'day', 'hour', 'min', 'ago', 'edited']):
+                                    # Clean up timestamp text
+                                    timestamp = text
+                                    # Remove "posted this" and similar
+                                    timestamp = re.sub(r'posted this\s*[•·]\s*', '', timestamp, flags=re.IGNORECASE)
+                                    timestamp = re.sub(r'^[^•·]*[•·]\s*', '', timestamp)  # Remove name before bullet
+                                    timestamp = timestamp.strip()
+                                    break
+                        if timestamp:
+                            break
+                    
+                    # Extract post URL
+                    post_url = None
+                    link_selectors = ['a[href*="/activity-"]', 'a[href*="/posts/"]', 'a[href*="/feed/update/"]']
+                    for link_sel in link_selectors:
+                        link_elem = container.locator(link_sel).first
+                        if await link_elem.count() > 0:
+                            post_url = await link_elem.get_attribute('href')
+                            if post_url:
+                                break
+                    
+                    # Check for media type
+                    media_type = None
+                    if await container.locator('video').count() > 0:
+                        media_type = "video"
+                    elif await container.locator('img').count() > 0:
+                        media_type = "image"
+                    
+                    # Clean up content - remove metadata and UI elements
+                    content = content.strip()
+                    # Remove "more" links
+                    content = re.sub(r'\s*\.\.\.\s*more\s*$', '', content, flags=re.IGNORECASE)
+                    content = re.sub(r'\s*See more\s*$', '', content, flags=re.IGNORECASE)
+                    # Remove "posted this" and similar metadata
+                    content = re.sub(r'^[^•·]*posted this[^•·]*[•·]\s*', '', content, flags=re.IGNORECASE)
+                    content = re.sub(r'^Muni Syam\s+', '', content, flags=re.IGNORECASE)
+                    # Clean up whitespace
+                    content = ' '.join(content.split())
+                    
+                    # Final validation - make sure it's actual content, not just metadata
+                    if (len(content) > 30 and 
+                        'posted this' not in content.lower() and
+                        not content.startswith('Muni Syam') and
+                        not re.match(r'^\d+\s*(mo|yr|day)', content, re.IGNORECASE)):
+                        posts.append(Post(
+                            content=content,
+                            timestamp=timestamp.strip() if timestamp else None,
+                            post_url=post_url if post_url and post_url.startswith('http') else f"https://www.linkedin.com{post_url}" if post_url else None,
+                            media_type=media_type
+                        ))
+                        logger.debug(f"Extracted post {idx+1}: {content[:80]}...")
+                        
+                except Exception as e:
+                    logger.debug(f"Error extracting post {idx+1}: {e}")
+                    continue
+            
+            logger.info(f"Extracted {len(posts)} posts")
+            
+        except Exception as e:
+            logger.warning(f"Error getting posts: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+        
+        return posts
     
     async def _get_contacts(self, base_url: str) -> list[Contact]:
         """Extract phone and email from the contact-info overlay dialog."""

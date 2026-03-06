@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify
+import json
 import logging
 import re
 
@@ -17,6 +18,7 @@ from google_scraper import (
 from openai_person_info import process_query_person
 from gemini_model import ask_gemini_person_info
 from perplexity import ask_perplexity_person_info
+from organization_scraper import scrape_organization
 
 try:
     # Optional: Playwright-based LinkedIn scraper integration
@@ -227,6 +229,74 @@ def _search_linkedin_candidates(query: str) -> list[dict]:
     return candidates
 
 
+def _search_linkedin_org_candidates(query: str) -> list[dict]:
+    """
+    Similar to _search_linkedin_candidates but targeting LinkedIn company pages
+    (site:linkedin.com/company) instead of person profiles.
+    """
+    search_q = f"site:linkedin.com/company {query}"
+    url = f"https://www.google.com/search?q={requests.utils.quote(search_q)}&num=6"
+    print(f"[search_linkedin_org] query={query!r}", flush=True)
+    print(f"[search_linkedin_org] url={url}", flush=True)
+
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=12)
+    except Exception:
+        return []
+
+    if resp.status_code != 200:
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    candidates: list[dict] = []
+    seen_urls: set[str] = set()
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if "linkedin.com/company/" not in href:
+            continue
+
+        m = re.search(r"(https?://(?:www\.)?linkedin\.com/company/[^\?&\"'>]+)", href)
+        clean_url = m.group(1) if m else href
+        if clean_url in seen_urls:
+            continue
+        seen_urls.add(clean_url)
+
+        # Anchor text often looks like "Company Name – Tagline"
+        title = a.get_text(" ", strip=True)
+
+        snippet = ""
+        parent = a.find_parent()
+        if parent is not None:
+            snippet = parent.get_text(" ", strip=True)
+        if snippet and len(snippet) > 400:
+            snippet = snippet[:400] + "…"
+
+        name = title or clean_url.split("/")[-1]
+        company = ""
+        for sep in [" - ", " – ", " | ", " · "]:
+            if sep in title:
+                parts = title.split(sep, 1)
+                name = parts[0].strip() or name
+                company = parts[1].strip()
+                break
+
+        candidates.append(
+            {
+                "name": name,
+                "company": company,
+                "snippet": snippet,
+                "url": clean_url,
+            }
+        )
+
+    print(
+        f"[search_linkedin_org] found {len(candidates)} raw organization candidate(s) from Google",
+        flush=True,
+    )
+    return candidates
+
+
 def _enrich_candidates_with_groq(candidates: list[dict]) -> list[dict]:
     """
     Use a very small Groq call to normalize just name + company
@@ -358,6 +428,49 @@ def api_search():
     return jsonify({"candidates": candidates})
 
 
+@app.post("/api/org/search")
+def api_org_search():
+    """
+    POST /api/org/search
+    JSON body: { "query": "organization name or LinkedIn company URL" }
+
+    Returns: { "candidates": [ { name, company, snippet, url }, ... ] }
+    """
+    print("[api_org_search] POST /api/org/search called", flush=True)
+    data = request.get_json(silent=True) or {}
+    query = (data.get("query") or "").strip()
+    print(f"[api_org_search] query={query!r}", flush=True)
+    if not query:
+        return jsonify({"error": "Missing 'query' in request body."}), 400
+
+    if query.startswith("http") and "linkedin.com/company/" in query:
+        print(
+            "[api_org_search] direct LinkedIn company URL provided, returning single candidate",
+            flush=True,
+        )
+        return jsonify(
+            {
+                "candidates": [
+                    {
+                        "name": "",
+                        "company": "",
+                        "snippet": "Direct LinkedIn company URL provided.",
+                        "url": query,
+                    }
+                ]
+            }
+        )
+
+    candidates = _search_linkedin_org_candidates(query)
+    candidates = _enrich_candidates_with_groq(candidates)
+
+    print(
+        f"[api_org_search] returning {len(candidates)} organization candidate(s) to UI",
+        flush=True,
+    )
+    return jsonify({"candidates": candidates})
+
+
 @app.post("/api/profile")
 def api_profile():
     """
@@ -383,6 +496,12 @@ def api_profile():
             profile_data = scrape_linkedin_profile(query)
             profile_data.setdefault("source_url", query)
             profile_data.setdefault("query", query)
+            # Print structured profile to terminal so you can see everything fetched
+            print("\n" + "=" * 60, flush=True)
+            print("STRUCTURED PROFILE (Playwright)", flush=True)
+            print("=" * 60, flush=True)
+            print(json.dumps(profile_data, indent=2, ensure_ascii=False, default=str), flush=True)
+            print("=" * 60 + "\n", flush=True)
             return jsonify(profile_data)
         except Exception as e:
             log.warning(f"linkedin_scraper failed, falling back to Groq pipeline: {e}")
@@ -397,6 +516,36 @@ def api_profile():
         # Pass through the error but keep 200 so UI can show the message
         return jsonify(result), 200
 
+    return jsonify(result)
+
+
+@app.post("/api/org/profile")
+def api_org_profile():
+    """
+    POST /api/org/profile
+    JSON body: { "query": "organization name or LinkedIn company URL" }
+
+    Uses the Selenium + Groq LinkedIn pipeline to extract a structured profile.
+    """
+    print("[api_org_profile] POST /api/org/profile called", flush=True)
+    data = request.get_json(silent=True) or {}
+    query = (data.get("query") or "").strip()
+    print(f"[api_org_profile] query={query!r}", flush=True)
+    if not query:
+        return jsonify({"error": "Missing 'query' in request body."}), 400
+
+    # Use the dedicated organization scraper, which resolves a company
+    # LinkedIn URL (if needed) and then reuses the Selenium + Groq pipeline.
+    result = scrape_organization(query)
+
+    if not result:
+        return jsonify({"error": "No organization data found."}), 404
+
+    if result.get("error"):
+        # Pass through the error but keep 200 so UI can show the message
+        return jsonify(result), 200
+
+    print("[api_org_profile] returning organization profile to UI", flush=True)
     return jsonify(result)
 
 

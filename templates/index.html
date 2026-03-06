@@ -200,6 +200,26 @@
                 transform: rotate(360deg);
             }
         }
+
+        .toggle-group {
+            display: inline-flex;
+            gap: 10px;
+            align-items: center;
+            font-size: 0.85rem;
+            color: #374151;
+        }
+
+        .toggle-group label {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-weight: 500;
+            margin-bottom: 0;
+        }
+
+        .toggle-group input[type="radio"] {
+            accent-color: #2563eb;
+        }
     </style>
 </head>
 
@@ -215,7 +235,7 @@
         <h1>Search</h1>
         <form method="post" action="{{ url_for('index') }}" id="search-form">
             <div class="field">
-                <label for="sname">Name</label>
+                <label for="sname" id="sname-label">Name</label>
                 <input type="text" id="sname" name="sname" placeholder="Enter name" required />
             </div>
 
@@ -237,6 +257,20 @@
                     <option value="perplexity">perplexity</option>
                     <option value="google">google</option>
                 </select>
+            </div>
+
+            <div class="field">
+                <label>Search type</label>
+                <div class="toggle-group" id="search-mode-toggle">
+                    <label>
+                        <input type="radio" name="search_mode" value="person" checked />
+                        Person
+                    </label>
+                    <label>
+                        <input type="radio" name="search_mode" value="organization" />
+                        Organization
+                    </label>
+                </div>
             </div>
 
             <button type="submit" id="search-button">Search</button>
@@ -283,6 +317,8 @@
             const sourceSelect = document.getElementById("source");
             const nameInput = document.getElementById("sname");
             const descriptionInput = document.getElementById("description");
+            const snameLabel = document.getElementById("sname-label");
+            const searchModeToggle = document.getElementsByName("search_mode");
 
             const serverError = document.getElementById("server-error");
             const serverResult = document.getElementById("server-result");
@@ -296,19 +332,156 @@
 
             if (!form || !btn || !overlay || !sourceSelect || !nameInput || !descriptionInput) return;
 
+            function getSearchMode() {
+                let mode = "person";
+                if (searchModeToggle && searchModeToggle.length) {
+                    for (let i = 0; i < searchModeToggle.length; i++) {
+                        if (searchModeToggle[i].checked) {
+                            mode = searchModeToggle[i].value || "person";
+                            break;
+                        }
+                    }
+                }
+                return mode;
+            }
+
+            function updatePlaceholdersForMode() {
+                const mode = getSearchMode();
+                if (!snameLabel || !nameInput || !descriptionInput) return;
+                if (mode === "organization") {
+                    snameLabel.textContent = "Organization";
+                    nameInput.placeholder = "Enter organization name";
+                    descriptionInput.placeholder =
+                        "Add country, industry or any extra hints";
+                } else {
+                    snameLabel.textContent = "Name";
+                    nameInput.placeholder = "Enter name";
+                    descriptionInput.placeholder =
+                        "Add company, role, city or any extra hints";
+                }
+            }
+
+            if (searchModeToggle && searchModeToggle.length) {
+                for (let i = 0; i < searchModeToggle.length; i++) {
+                    searchModeToggle[i].addEventListener("change", updatePlaceholdersForMode);
+                }
+            }
+            updatePlaceholdersForMode();
+
             function buildProfileHtml(profile) {
                 if (!profile || typeof profile !== "object") return "";
 
-                const name = profile.name || "(no name found)";
-                const headline = profile.headline || "";
+                const name = profile.name || profile.full_name || "(no name found)";
+
+                // Headline may not exist for Playwright-scraped profiles,
+                // so we derive a synthetic one from the primary experience.
+                let headline = profile.headline || "";
                 const location = profile.location || "";
                 const about = profile.about || "";
-                const sourceUrl = profile.source_url || profile.source || "";
+                const sourceUrl =
+                    profile.source_url ||
+                    profile.source ||
+                    profile.linkedin_url ||
+                    "";
 
-                const experience = Array.isArray(profile.experience) ? profile.experience : [];
-                const education = Array.isArray(profile.education) ? profile.education : [];
+                // Normalize experience: support both Groq pipeline (`experience`)
+                // and Playwright scraper (`experiences` with different field names).
+                const rawExperience = Array.isArray(profile.experience)
+                    ? profile.experience
+                    : Array.isArray(profile.experiences)
+                        ? profile.experiences
+                        : [];
+
+                const experience = rawExperience
+                    .map(function (job) {
+                        if (!job || typeof job !== "object") return null;
+                        const title = job.title || job.position_title || "";
+                        const company = job.company || job.institution_name || "";
+                        const years =
+                            job.years ||
+                            (job.from_date || job.to_date
+                                ? [job.from_date, job.to_date].filter(Boolean).join(" – ")
+                                : "") ||
+                            job.duration ||
+                            "";
+                        const location = job.location || "";
+                        const description = job.description || "";
+                        return {
+                            title,
+                            company,
+                            years,
+                            duration: job.duration || "",
+                            location,
+                            description,
+                        };
+                    })
+                    .filter(Boolean);
+
+                // If no explicit headline, synthesize one from the first experience.
+                if (!headline && experience.length) {
+                    const primary = experience[0];
+                    const parts = [];
+                    if (primary.title) parts.push(primary.title);
+                    if (primary.company) parts.push(primary.company);
+                    headline = parts.join(" @ ");
+                }
+
+                // Normalize education: support both `education` and `educations`.
+                const rawEducation = Array.isArray(profile.education)
+                    ? profile.education
+                    : Array.isArray(profile.educations)
+                        ? profile.educations
+                        : [];
+
+                const education = rawEducation
+                    .map(function (ed) {
+                        if (!ed || typeof ed !== "object") return null;
+                        const institution = ed.institution || ed.institution_name || "";
+                        const degree = ed.degree || "";
+                        const years =
+                            ed.years ||
+                            (ed.from_date || ed.to_date
+                                ? [ed.from_date, ed.to_date].filter(Boolean).join(" – ")
+                                : "");
+                        const field = ed.field || "";
+                        const grade = ed.grade || "";
+                        return {
+                            institution,
+                            degree,
+                            years,
+                            field,
+                            grade,
+                        };
+                    })
+                    .filter(function (ed) {
+                        // Require at least an institution or a degree for display.
+                        return ed && (ed.institution || ed.degree);
+                    });
+
                 const skills = Array.isArray(profile.skills) ? profile.skills : [];
-                const certifications = Array.isArray(profile.certifications) ? profile.certifications : [];
+
+                // Certifications may come either as `certifications` (Groq pipeline)
+                // or as `accomplishments` with a certification-like category
+                // from the Playwright scraper.
+                let certifications = Array.isArray(profile.certifications)
+                    ? profile.certifications
+                    : [];
+
+                if ((!certifications || !certifications.length) && Array.isArray(profile.accomplishments)) {
+                    certifications = profile.accomplishments
+                        .filter(function (acc) {
+                            if (!acc || typeof acc !== "object") return false;
+                            const cat = (acc.category || "").toLowerCase();
+                            return cat.includes("cert");
+                        })
+                        .map(function (acc) {
+                            return {
+                                name: acc.title || "",
+                                issuer: acc.issuer || "",
+                                date: acc.issued_date || "",
+                            };
+                        });
+                }
 
                 let html = "";
                 html += '<div class="profile-header">';
@@ -406,6 +579,40 @@
                     });
                 }
 
+                const interests = Array.isArray(profile.interests) ? profile.interests : [];
+                if (interests.length) {
+                    html += '<div class="profile-section-title">Interests</div>';
+                    html += '<div class="profile-pill-list">';
+                    interests.slice(0, 20).forEach(function (i) {
+                        const label = (i && (i.name || i.category)) ? (i.name || i.category) : String(i);
+                        html += '<span class="profile-pill">' + label + "</span>";
+                    });
+                    html += "</div>";
+                }
+
+                const posts = Array.isArray(profile.posts) ? profile.posts : [];
+                if (posts.length) {
+                    html += '<div class="profile-section-title">Recent posts</div>';
+                    posts.slice(0, 5).forEach(function (p) {
+                        if (!p) return;
+                        const content = (p.content || "").trim();
+                        const timestamp = p.timestamp || "";
+                        const postUrl = p.post_url || "";
+                        html += '<div class="profile-item">';
+                        if (content) {
+                            const short = content.length > 200 ? content.slice(0, 200) + "…" : content;
+                            html += '<div style="white-space:pre-wrap;">' + short + "</div>";
+                        }
+                        const metaParts = [];
+                        if (timestamp) metaParts.push(timestamp);
+                        if (postUrl) metaParts.push('<a href="' + postUrl + '" target="_blank" rel="noreferrer">View post</a>');
+                        if (metaParts.length) {
+                            html += '<div class="profile-meta">' + metaParts.join(" · ") + "</div>";
+                        }
+                        html += "</div>";
+                    });
+                }
+
                 if (sourceUrl) {
                     html += '<div class="profile-meta">Source: ' + sourceUrl + "</div>";
                 }
@@ -438,6 +645,7 @@
                 const name = nameInput.value.trim();
                 const desc = descriptionInput.value.trim();
                 const query = desc ? `${name} ${desc}` : name;
+                const mode = getSearchMode();
                 resetInternetViews();
 
                 if (!query) {
@@ -451,7 +659,8 @@
                 btn.textContent = "Searching...";
 
                 try {
-                    const resp = await fetch("/api/search", {
+                    const searchEndpoint = mode === "organization" ? "/api/org/search" : "/api/search";
+                    const resp = await fetch(searchEndpoint, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ query })
@@ -466,20 +675,60 @@
 
                     const candidates = Array.isArray(data.candidates) ? data.candidates : [];
                     if (!candidates.length) {
-                        internetError.textContent = "No LinkedIn profiles found. Please refine the name (add company/city).";
-                        internetError.style.display = "block";
-                        return;
+                        if (mode === "organization") {
+                            // Fallback for organizations: if we couldn't find any
+                            // LinkedIn company URLs via search, call the org
+                            // profile endpoint directly with the raw query so
+                            // the backend Selenium/Groq pipeline can still try
+                            // to resolve and extract information.
+                            try {
+                                const r = await fetch("/api/org/profile", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ query })
+                                });
+                                const profile = await r.json();
+
+                                if (!r.ok || profile.error) {
+                                    internetError.textContent =
+                                        profile.error ||
+                                        "No LinkedIn organizations found. Please refine the organization name (add country/industry).";
+                                    internetError.style.display = "block";
+                                    return;
+                                }
+
+                                internetResultPre.textContent = JSON.stringify(profile, null, 2);
+                                internetResult.style.display = "none";
+                                renderProfileCard(internetProfileCard, profile);
+                            } catch (e) {
+                                internetError.textContent =
+                                    "Network error while extracting organization profile.";
+                                internetError.style.display = "block";
+                            }
+                            return;
+                        } else {
+                            internetError.textContent =
+                                "No LinkedIn profiles found. Please refine the name (add company/city).";
+                            internetError.style.display = "block";
+                            return;
+                        }
                     }
 
                     const list = document.createElement("div");
-                    list.innerHTML = "<strong>Select the correct person:</strong><br/><br/>";
+                    list.innerHTML =
+                        mode === "organization"
+                            ? "<strong>Select the correct organization:</strong><br/><br/>"
+                            : "<strong>Select the correct person:</strong><br/><br/>";
 
                     candidates.forEach((c, idx) => {
                         const row = document.createElement("div");
                         row.style.marginBottom = "8px";
 
                         const title = document.createElement("div");
-                        title.textContent = (c.name || `Person ${idx + 1}`) + (c.company ? ` — ${c.company}` : "");
+                        const entityLabel =
+                            mode === "organization" ? `Organization ${idx + 1}` : `Person ${idx + 1}`;
+                        title.textContent =
+                            (c.name || entityLabel) + (c.company ? ` — ${c.company}` : "");
 
                         const link = document.createElement("a");
                         link.href = c.url;
@@ -516,7 +765,9 @@
                             internetResultPre.textContent = "";
 
                             try {
-                                const r = await fetch("/api/profile", {
+                                const profileEndpoint =
+                                    mode === "organization" ? "/api/org/profile" : "/api/profile";
+                                const r = await fetch(profileEndpoint, {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({ query: c.url })

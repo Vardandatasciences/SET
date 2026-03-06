@@ -18,6 +18,7 @@ Usage:
 import os, re, json, time, logging
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import unquote, urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -119,6 +120,45 @@ class SeleniumScraper:
             log.warning(f"Selenium setup failed: {e}")
             log.warning("  Install ChromeDriver: https://chromedriver.chromium.org/")
             self.driver = None
+
+    def _dismiss_google_consent(self) -> None:
+        """Try to dismiss Google cookie/consent dialog so search results are visible."""
+        if not self.driver:
+            return
+        try:
+            time.sleep(1.5)
+            # Consent can be in an iframe
+            for frame_css in ["iframe[src*='consent.google.com']", "iframe[id^='sp-']"]:
+                try:
+                    iframe = self.driver.find_elements(By.CSS_SELECTOR, frame_css)
+                    if iframe:
+                        self.driver.switch_to.frame(iframe[0])
+                        for xpath in ["//div[text()='Accept all']", "//button[contains(., 'Accept')]", "//span[text()='Accept all']"]:
+                            try:
+                                btn = self.driver.find_elements(By.XPATH, xpath)
+                                if btn:
+                                    btn[0].click()
+                                    log.info("  Dismissed Google consent (iframe)")
+                                    time.sleep(2)
+                                    return
+                            except Exception:
+                                continue
+                        self.driver.switch_to.default_content()
+                except Exception:
+                    self.driver.switch_to.default_content()
+            # Outside iframe
+            for xpath in ["//div[text()='Accept all']", "//button[contains(., 'Accept')]", "//*[contains(text(), 'Accept all')]"]:
+                try:
+                    btn = self.driver.find_elements(By.XPATH, xpath)
+                    if btn:
+                        btn[0].click()
+                        log.info("  Dismissed Google consent")
+                        time.sleep(2)
+                        return
+                except Exception:
+                    continue
+        except Exception as e:
+            log.debug(f"  Consent dismiss skipped: {e}")
 
     def get_profile_text(self, query_or_url: str) -> tuple[str, str]:
         """Returns (cleaned_text, source_url) using Selenium. Also gets Google snippets."""
@@ -323,10 +363,96 @@ class SeleniumScraper:
             log.warning(f"  Google snippets search failed: {e}")
             return ""
 
+    def _extract_linkedin_profile_url(self, href: str) -> Optional[str]:
+        """Extract a clean LinkedIn profile URL from href (handles Google redirect / encoding)."""
+        if not href or "linkedin" not in href.lower():
+            return None
+        # Google wraps links: /url?q=https%3A%2F%2Fwww.linkedin.com%2Fin%2F...
+        try:
+            parsed = urlparse(href)
+            if "google" in parsed.netloc and parsed.path == "/url":
+                qs = parse_qs(parsed.query)
+                for q in qs.get("q", []):
+                    decoded = unquote(q)
+                    m = re.search(r"linkedin\.com/in/([\w\-]+)", decoded, re.IGNORECASE)
+                    if m:
+                        return f"https://www.linkedin.com/in/{m.group(1)}"
+        except Exception:
+            pass
+        # Direct or once-decoded href
+        decoded = unquote(href)
+        m = re.search(r"linkedin\.com/in/([\w\-]+)", decoded, re.IGNORECASE)
+        if m:
+            return f"https://www.linkedin.com/in/{m.group(1)}"
+        return None
+
+    def _extract_linkedin_urls_from_page(self, max_results: int, urls: list[str]) -> None:
+        """Extract LinkedIn profile URLs from current page (links + page source). Mutates urls in place."""
+        # From <a> tags
+        links = self.driver.find_elements(By.TAG_NAME, "a")
+        for link in links:
+            try:
+                href = link.get_attribute("href") or ""
+                found = self._extract_linkedin_profile_url(href)
+                if found and found not in urls:
+                    urls.append(found)
+                    log.info(f"  Found LinkedIn URL: {found}")
+                    if len(urls) >= max_results:
+                        return
+            except Exception:
+                continue
+        if len(urls) >= max_results:
+            return
+        # From page source
+        page_source = self.driver.page_source
+        for m in re.finditer(
+            r'https?://(?:www\.)?linkedin\.com/in/([\w\-]+)',
+            page_source,
+            re.IGNORECASE,
+        ):
+            found = f"https://www.linkedin.com/in/{m.group(1)}"
+            if found not in urls:
+                urls.append(found)
+                log.info(f"  Found LinkedIn URL in page source: {found}")
+                if len(urls) >= max_results:
+                    return
+        for m in re.finditer(
+            r'linkedin\.com(?:%2E)?(?:%2F|/)in(?:%2F|/)([^&"\'>?\s]+)',
+            page_source,
+            re.IGNORECASE,
+        ):
+            slug = unquote(m.group(1)).strip()
+            slug = re.sub(r"\s+", "-", slug)
+            slug = re.sub(r"[^\w\-]", "", slug)
+            if slug and len(slug) >= 2:
+                found = f"https://www.linkedin.com/in/{slug}"
+                if found not in urls:
+                    urls.append(found)
+                    log.info(f"  Found LinkedIn URL (encoded): {found}")
+                    if len(urls) >= max_results:
+                        return
+
+    def _find_linkedin_urls_bing(self, query: str, max_results: int) -> list[str]:
+        """Search Bing with Selenium for LinkedIn profile URLs. Often works when Google blocks."""
+        if not self.driver:
+            return []
+        urls: list[str] = []
+        try:
+            search_q = f"site:linkedin.com/in {query}"
+            search_url = f"https://www.bing.com/search?q={requests.utils.quote(search_q)}&count=15"
+            log.info(f"  Bing fallback: {search_q}")
+            self.driver.get(search_url)
+            time.sleep(4)
+            self._extract_linkedin_urls_from_page(max_results, urls)
+        except Exception as e:
+            log.warning(f"  Bing search failed: {e}")
+        return urls
+
     def find_linkedin_urls(self, query: str, max_results: int = 5) -> list[str]:
-        """Search Google for LinkedIn profile URLs.
+        """Search Google (then Bing) for LinkedIn profile URLs.
 
         Returns up to max_results candidate profile URLs.
+        Handles consent dialog and Google redirect URLs. Falls back to Bing if Google returns nothing.
         """
         if not self.driver:
             return []
@@ -334,7 +460,11 @@ class SeleniumScraper:
         urls: list[str] = []
         
         try:
-            # Try multiple search strategies
+            # Load Google once and dismiss consent so search results are visible
+            self.driver.get("https://www.google.com")
+            time.sleep(2)
+            self._dismiss_google_consent()
+            
             search_queries = [
                 f"site:linkedin.com/in {query}",
                 f'"{query}" linkedin',
@@ -342,63 +472,131 @@ class SeleniumScraper:
             ]
             
             for search_q in search_queries:
+                if len(urls) >= max_results:
+                    break
                 try:
                     search_url = f"https://www.google.com/search?q={requests.utils.quote(search_q)}&num=10"
                     log.info(f"  Searching: {search_q}")
                     
                     self.driver.get(search_url)
-                    time.sleep(3)
+                    time.sleep(4)
+                    self._dismiss_google_consent()
+                    time.sleep(1)
                     
-                    # Wait for results to load
+                    try:
+                        WebDriverWait(self.driver, 8).until(
+                            EC.presence_of_element_located((By.TAG_NAME, "body"))
+                        )
+                    except TimeoutException:
+                        pass
+                    
+                    self._extract_linkedin_urls_from_page(max_results, urls)
+                    if len(urls) >= max_results:
+                        return urls
+                    
+                except Exception as e:
+                    log.warning(f"  Search query failed: {e}")
+                    continue
+            
+            # Fallback: Bing often returns LinkedIn links and is less strict than Google
+            if len(urls) < max_results:
+                bing_urls = self._find_linkedin_urls_bing(query, max_results - len(urls))
+                for u in bing_urls:
+                    if u not in urls:
+                        urls.append(u)
+                        if len(urls) >= max_results:
+                            break
+                
+        except Exception as e:
+            log.warning(f"  LinkedIn URL search failed: {e}")
+        
+        return urls
+
+    def find_linkedin_company_urls(
+        self, query: str, max_results: int = 5
+    ) -> list[str]:
+        """Search Google for LinkedIn company page URLs using Selenium.
+
+        Returns up to max_results candidate company URLs.
+        """
+        if not self.driver:
+            return []
+
+        urls: list[str] = []
+
+        try:
+            # Focused on company pages instead of people profiles
+            search_queries = [
+                f"site:linkedin.com/company {query}",
+                f'"{query}" linkedin company',
+                f"{query} linkedin profile company",
+            ]
+
+            for search_q in search_queries:
+                try:
+                    search_url = (
+                        f"https://www.google.com/search?q="
+                        f"{requests.utils.quote(search_q)}&num=10"
+                    )
+                    log.info(f"  Searching (company): {search_q}")
+
+                    self.driver.get(search_url)
+                    time.sleep(3)
+
                     try:
                         WebDriverWait(self.driver, 10).until(
                             EC.presence_of_element_located((By.TAG_NAME, "body"))
                         )
                     except TimeoutException:
                         pass
-                    
-                    # Get all links from the page
+
                     links = self.driver.find_elements(By.TAG_NAME, "a")
-                    
+
                     for link in links:
                         try:
                             href = link.get_attribute("href") or ""
-                            # Look for LinkedIn profile URLs
-                            m = re.search(r"linkedin\.com/in/([\w\-]+)", href, re.IGNORECASE)
-                            if m:
-                                found = f"https://www.linkedin.com/in/{m.group(1)}"
-                                if found not in urls:
-                                    urls.append(found)
-                                    log.info(f"  Found LinkedIn URL: {found}")
-                                    if len(urls) >= max_results:
-                                        return urls
+                            m = re.search(
+                                r"linkedin\.com/company/([\w\-]+)",
+                                href,
+                                re.IGNORECASE,
+                            )
+                            if not m:
+                                continue
+                            found = f"https://www.linkedin.com/company/{m.group(1)}"
+                            if found not in urls:
+                                urls.append(found)
+                                log.info(f"  Found LinkedIn company URL: {found}")
+                                if len(urls) >= max_results:
+                                    return urls
                         except Exception:
                             continue
-                    
+
                 except Exception as e:
-                    log.warning(f"  Search query failed: {e}")
+                    log.warning(f"  Company search query failed: {e}")
                     continue
-            
-            # If no LinkedIn URL found in search results, try extracting from page source
+
+            # Fallback: scan page source for any /company/ URLs
             try:
                 page_source = self.driver.page_source
                 matches = re.findall(
-                    r'https?://(?:www\.)?linkedin\.com/in/[\w\-]+',
+                    r"https?://(?:www\.)?linkedin\.com/company/[^\s\"'>]+",
                     page_source,
                     re.IGNORECASE,
                 )
                 for found_url in matches:
                     if found_url not in urls:
                         urls.append(found_url)
-                        log.info(f"  Found LinkedIn URL in page source: {found_url}")
+                        log.info(
+                            f"  Found LinkedIn company URL in page source: {found_url}"
+                        )
                         if len(urls) >= max_results:
                             break
             except Exception:
                 pass
-                
+
         except Exception as e:
-            log.warning(f"  LinkedIn URL search failed: {e}")
-        
+            log.warning(f"  LinkedIn company URL search failed: {e}")
+
         return urls
 
     def _find_linkedin_url(self, query: str) -> str:

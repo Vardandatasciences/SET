@@ -10,6 +10,14 @@ class Interest(BaseModel):
     linkedin_url: Optional[str] = None
 
 
+class Post(BaseModel):
+    """LinkedIn post/activity model."""
+    content: str
+    timestamp: Optional[str] = None
+    post_url: Optional[str] = None
+    media_type: Optional[str] = None  # "image", "video", "article", etc.
+
+
 class Contact(BaseModel):
     type: str
     value: str
@@ -68,6 +76,7 @@ class Person(BaseModel):
     accomplishments: List[Accomplishment] = Field(default_factory=list)
     contacts: List[Contact] = Field(default_factory=list)
     skills: List[str] = Field(default_factory=list)
+    posts: List["Post"] = Field(default_factory=list)
 
     @field_validator("linkedin_url")
     @classmethod
