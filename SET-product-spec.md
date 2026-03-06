@@ -683,3 +683,31 @@ Vardaan’s SET is an **intelligence platform** that:
 - Analytics dashboards for ROI and adoption.
 - Backup/DR hardening and advanced security monitoring.
 
+---
+
+## 7. Selenium-Based Additions (flask_app & Data Ingestion)
+
+The web app already uses Selenium (via `google_scraper.SeleniumScraper`) for:
+- **Person search**: When Google/DuckDuckGo HTML returns no `site:linkedin.com/in` results, Selenium runs Google/Bing search to find LinkedIn profile URLs.
+- **Organization search**: Same fallback for `site:linkedin.com/company` (Selenium used when HTML search returns no candidates).
+- **Profile/org pipelines**: Full LinkedIn page fetch (Selenium or Playwright) + Groq for structured extraction.
+
+**What you can add through Selenium** (aligned with SET spec and `flask_app.py`):
+
+| Area | Addition | Why Selenium |
+|------|----------|--------------|
+| **Search & discovery** | Selenium fallback for org search when Google HTML is blocked | Already added in `_search_linkedin_org_candidates`. |
+| **Company intelligence** | Scrape **BBB, Trustpilot, Yelp** company pages (reviews, ratings, complaint themes) | These sites are often JS-heavy; Selenium renders and you can extract text for sentiment/theme analysis (§3.1.7). |
+| **News & filings** | Fetch **SEC EDGAR** or other JS-heavy filing/search pages | When search results or filing list are rendered by JS, Selenium can load and extract links/text. |
+| **News sites** | Scrape **article body** from news URLs (for long-range news module) | Many news pages load content via JS; Selenium gets full DOM for NLG/summaries (§3.3). |
+| **Company websites** | Crawl **About / Leadership / News** on target company domains | SPAs and JS-heavy corporate sites need a real browser to get visible text. |
+| **Screenshots / PDF** | **Full-page screenshot** or **print-to-PDF** of a URL | Use `driver.save_screenshot()` or print PDF for capsule appendices or evidence. |
+| **Resilient URL fetch** | Generic **“fetch URL with Selenium”** API | Single endpoint that, for any URL, returns rendered HTML or text when `requests` fails (blocked, CAPTCHA, or JS-only). |
+
+**Suggested new Flask endpoints (optional):**
+
+- `POST /api/fetch-url` — Body: `{ "url": "https://..." }`. Use Selenium to load URL and return `{ "text": "...", "title": "..." }` (and optionally screenshot path). Helps any module that needs JS-rendered content.
+- `POST /api/company-reviews` — Body: `{ "company_name": "...", "source": "bbb" \| "trustpilot" \| "yelp" }`. Use Selenium to open the relevant review/complaint page, extract reviews/ratings, optionally call Groq for theme/sentiment; return structured JSON for §3.1.7 Consumer Sentiment & Reputation.
+
+**Implementation note:** Reuse `SeleniumScraper` (or a thin wrapper) for all of the above: same headless Chrome options, same `_clean(html)`-style text extraction. For screenshot/PDF, add methods on `SeleniumScraper` such as `get_page_text(url)` and `save_screenshot(url, path)` so both the existing pipeline and new Flask routes can share one browser abstraction.
+

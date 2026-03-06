@@ -294,6 +294,40 @@ def _search_linkedin_org_candidates(query: str) -> list[dict]:
         f"[search_linkedin_org] found {len(candidates)} raw organization candidate(s) from Google",
         flush=True,
     )
+
+    # When Google HTML returns nothing, fall back to Selenium (same pattern as person search)
+    if not candidates and SELENIUM_AVAILABLE:
+        try:
+            print(
+                "[search_linkedin_org] no HTML candidates, trying Selenium find_linkedin_company_urls",
+                flush=True,
+            )
+            selenium_scraper = SeleniumScraper()
+            selenium_urls: list[str] = []
+            if selenium_scraper.driver:
+                selenium_urls = selenium_scraper.find_linkedin_company_urls(
+                    query, max_results=5
+                )
+                selenium_scraper.close()
+            for selenium_url in selenium_urls:
+                print(
+                    f"[search_linkedin_org] Selenium found company URL: {selenium_url}",
+                    flush=True,
+                )
+                candidates.append(
+                    {
+                        "name": query,
+                        "company": "",
+                        "snippet": "Found via Selenium Google search.",
+                        "url": selenium_url,
+                    }
+                )
+        except Exception as e:
+            print(
+                f"[search_linkedin_org] Selenium fallback failed: {e}",
+                flush=True,
+            )
+
     return candidates
 
 
