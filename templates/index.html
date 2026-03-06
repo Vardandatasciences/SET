@@ -155,6 +155,48 @@
             margin-top: 6px;
         }
 
+        .open-to-work-badge {
+            display: inline-block;
+            margin-top: 6px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: #dcfce7;
+            color: #166534;
+            font-size: 0.78rem;
+            font-weight: 600;
+        }
+
+        .profile-raw-section {
+            margin-top: 14px;
+            border-top: 1px solid #d1d5db;
+            padding-top: 10px;
+        }
+
+        .profile-raw-section button {
+            margin-top: 0;
+            width: auto;
+            padding: 6px 12px;
+            font-size: 0.82rem;
+        }
+
+        .profile-raw-json {
+            margin-top: 8px;
+            padding: 10px;
+            background: #1e293b;
+            color: #e2e8f0;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            max-height: 400px;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .profile-card-inner {
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+
         .error {
             margin-top: 16px;
             padding: 10px 12px;
@@ -492,6 +534,9 @@
                 if (location) {
                     html += '<div class="profile-location">' + location + "</div>";
                 }
+                if (profile.open_to_work === true) {
+                    html += '<div class="open-to-work-badge">Open to work</div>';
+                }
                 html += "</div>";
 
                 if (about) {
@@ -501,15 +546,37 @@
                 if (skills.length) {
                     html += '<div class="profile-section-title">Key skills</div>';
                     html += '<div class="profile-pill-list">';
-                    skills.slice(0, 25).forEach(function (s) {
+                    skills.forEach(function (s) {
                         html += '<span class="profile-pill">' + String(s) + "</span>";
                     });
                     html += "</div>";
                 }
 
+                const contacts = Array.isArray(profile.contacts) ? profile.contacts : [];
+                if (contacts.length) {
+                    html += '<div class="profile-section-title">Contact</div>';
+                    contacts.forEach(function (c) {
+                        if (!c || typeof c !== "object") return;
+                        const type = c.type || "";
+                        const value = c.value || "";
+                        const label = c.label || "";
+                        if (!value) return;
+                        const display = label || type || "Contact";
+                        const href = (value || "").startsWith("http") ? value : (type === "email" ? "mailto:" + value : (type === "phone" ? "tel:" + value : value));
+                        html += '<div class="profile-item">';
+                        html += "<strong>" + display + "</strong>";
+                        if (href && (value.startsWith("http") || type === "email" || type === "phone")) {
+                            html += ': <a href="' + href + '" target="_blank" rel="noreferrer">' + value + "</a>";
+                        } else {
+                            html += ": " + value;
+                        }
+                        html += "</div>";
+                    });
+                }
+
                 if (experience.length) {
                     html += '<div class="profile-section-title">Experience</div>';
-                    experience.slice(0, 8).forEach(function (job) {
+                    experience.forEach(function (job) {
                         if (!job) return;
                         const title = job.title || "";
                         const company = job.company || "";
@@ -537,7 +604,7 @@
 
                 if (education.length) {
                     html += '<div class="profile-section-title">Education</div>';
-                    education.slice(0, 8).forEach(function (ed) {
+                    education.forEach(function (ed) {
                         if (!ed) return;
                         const inst = ed.institution || "";
                         const degree = ed.degree || "";
@@ -560,11 +627,11 @@
 
                 if (certifications.length) {
                     html += '<div class="profile-section-title">Certifications</div>';
-                    certifications.slice(0, 8).forEach(function (cert) {
+                    certifications.forEach(function (cert) {
                         if (!cert) return;
-                        const nameC = cert.name || "";
+                        const nameC = cert.name || cert.title || "";
                         const issuer = cert.issuer || "";
-                        const date = cert.date || "";
+                        const date = cert.date || cert.issued_date || "";
                         html += '<div class="profile-item">';
                         if (nameC) {
                             html += "<strong>" + nameC + "</strong>";
@@ -579,11 +646,39 @@
                     });
                 }
 
+                const allAccomplishments = Array.isArray(profile.accomplishments) ? profile.accomplishments : [];
+                const otherAccomplishments = allAccomplishments.filter(function (acc) {
+                    if (!acc || typeof acc !== "object") return false;
+                    const cat = (acc.category || "").toLowerCase();
+                    return !cat.includes("cert");
+                });
+                if (otherAccomplishments.length) {
+                    html += '<div class="profile-section-title">Accomplishments (courses, projects, etc.)</div>';
+                    otherAccomplishments.forEach(function (acc) {
+                        const title = acc.title || "";
+                        const category = acc.category || "";
+                        const issuer = acc.issuer || "";
+                        const issuedDate = acc.issued_date || "";
+                        const desc = acc.description || "";
+                        html += '<div class="profile-item">';
+                        if (title) html += "<strong>" + title + "</strong>";
+                        const metaParts = [];
+                        if (category) metaParts.push(category);
+                        if (issuer) metaParts.push(issuer);
+                        if (issuedDate) metaParts.push(issuedDate);
+                        if (metaParts.length) {
+                            html += '<div class="profile-meta">' + metaParts.join(" · ") + "</div>";
+                        }
+                        if (desc) html += '<div style="font-size:0.8rem;color:#4b5563;margin-top:2px;">' + desc + "</div>";
+                        html += "</div>";
+                    });
+                }
+
                 const interests = Array.isArray(profile.interests) ? profile.interests : [];
                 if (interests.length) {
                     html += '<div class="profile-section-title">Interests</div>';
                     html += '<div class="profile-pill-list">';
-                    interests.slice(0, 20).forEach(function (i) {
+                    interests.forEach(function (i) {
                         const label = (i && (i.name || i.category)) ? (i.name || i.category) : String(i);
                         html += '<span class="profile-pill">' + label + "</span>";
                     });
@@ -593,7 +688,7 @@
                 const posts = Array.isArray(profile.posts) ? profile.posts : [];
                 if (posts.length) {
                     html += '<div class="profile-section-title">Recent posts</div>';
-                    posts.slice(0, 5).forEach(function (p) {
+                    posts.forEach(function (p) {
                         if (!p) return;
                         const content = (p.content || "").trim();
                         const timestamp = p.timestamp || "";
@@ -614,7 +709,7 @@
                 }
 
                 if (sourceUrl) {
-                    html += '<div class="profile-meta">Source: ' + sourceUrl + "</div>";
+                    html += '<div class="profile-meta">Source: <a href="' + sourceUrl + '" target="_blank" rel="noreferrer">' + sourceUrl + "</a></div>";
                 }
 
                 return html;
@@ -624,7 +719,26 @@
                 if (!container) return;
                 const html = buildProfileHtml(profile);
                 if (!html) return;
-                container.innerHTML = html;
+                container.innerHTML = '<div class="profile-card-inner">' + html + "</div>";
+                var rawSection = document.createElement("div");
+                rawSection.className = "profile-raw-section";
+                var btn = document.createElement("button");
+                btn.type = "button";
+                btn.textContent = "Show raw JSON (all stored details)";
+                var pre = document.createElement("pre");
+                pre.className = "profile-raw-json";
+                pre.style.display = "none";
+                btn.onclick = function () {
+                    if (pre.style.display === "none") {
+                        pre.style.display = "block";
+                        if (!pre.textContent) pre.textContent = JSON.stringify(profile, null, 2);
+                    } else {
+                        pre.style.display = "none";
+                    }
+                };
+                rawSection.appendChild(btn);
+                rawSection.appendChild(pre);
+                container.appendChild(rawSection);
                 container.style.display = "block";
             }
 
